@@ -9,9 +9,6 @@ from tqdm import tqdm
 import os
 from PIL import Image
 from skimage.io import imread
-import pydicom
-
-from albumentations.pytorch.functional import img_to_tensor
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -27,12 +24,13 @@ class Dataset(torch.utils.data.Dataset):
             img = cv2.imread(img_path)
         except:
             img = np.zeros((512, 512, 3), 'uint8')
+        try:
+            img = Image.fromarray(img)
+        except:
+            img = Image.fromarray(np.zeros((512, 512, 3), 'uint8'))
 
         if self.transform is not None:
-            data = {'image': img}
-            augmented = self.transform(**data)
-            img = augmented['image']
-            img = img_to_tensor(img)
+            img = self.transform(img)
 
         return img, label
 

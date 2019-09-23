@@ -33,7 +33,7 @@ from lib.models.model_factory import get_model
 from lib.utils import *
 from lib.metrics import *
 from lib.losses import *
-from lib.preprocess import preprocess
+from lib.preprocess import resize
 
 
 def parse_args():
@@ -42,6 +42,7 @@ def parse_args():
     parser.add_argument('--name', default=None,
                         help='model name: (default: arch+timestamp)')
     parser.add_argument('--tta', default=False, type=str2bool)
+
 
     args = parser.parse_args()
 
@@ -71,34 +72,22 @@ def main():
         print('%s: %s' % (arg, getattr(args, arg)))
     print('------------')
 
-    if args.pred_type == 'classification':
-        num_outputs = 5
-    elif args.pred_type == 'regression':
-        num_outputs = 1
-    elif args.pred_type == 'multitask':
-        num_outputs = 6
-    else:
-        raise NotImplementedError
+    num_outputs = 6
 
     cudnn.benchmark = True
 
     test_transform = transforms.Compose([
-        transforms.Resize((args.input_size)),
+        transforms.Resize((args.img_size, args.img_size)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
     # data loading code
-    test_dir = preprocess(
-        'test',
-        args.img_size,
-        scale=args.scale_radius,
-        norm=args.normalize,
-        pad=args.padding,
-        remove=args.remove)
-    test_df = pd.read_csv('inputs/test.csv')
-    test_img_paths = test_dir + '/' + test_df['id_code'].values + '.png'
-    test_labels = np.zeros(len(test_img_paths))
+    stage_1_test_dir = resize('stage_1_test', args.img_size)
+    print(stage_1_test_dir)
+    test_df = pd.read_csv('inputs/stage_1_sample_submission.csv')
+    test_img_paths = np.array([stage_1_test_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in test_df['ID']][::6])
+    test_labels = np.array([test_df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')
 
     test_set = Dataset(
         test_img_paths,
@@ -108,7 +97,7 @@ def main():
         test_set,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4)
+        num_workers=args.num_workers)
 
     preds = []
     for fold in range(args.n_splits):
@@ -131,19 +120,10 @@ def main():
         preds_fold = []
         with torch.no_grad():
             for i, (input, _) in tqdm(enumerate(test_loader), total=len(test_loader)):
-                if test_args.tta:
-                    outputs = []
-                    for input in apply_tta(input):
-                        input = input.cuda()
-                        output = model(input)
-                        outputs.append(output.data.cpu().numpy()[:, 0])
-                    preds_fold.extend(np.mean(outputs, axis=0))
-                else:
-                    input = input.cuda()
-                    output = model(input)
-
-                    preds_fold.extend(output.data.cpu().numpy()[:, 0])
-        preds_fold = np.array(preds_fold)
+                input = input.cuda()
+                output = model(input)
+                preds_fold.append(torch.sigmoid(output).data.cpu().numpy())
+        preds_fold = np.vstack(preds_fold)
         preds.append(preds_fold)
 
         if not args.cv:
@@ -151,22 +131,21 @@ def main():
 
     preds = np.mean(preds, axis=0)
 
-    if test_args.tta:
-        args.name += '_tta'
+    test_df = pd.DataFrame(preds, columns=[
+        'epidural', 'intraparenchymal', 'intraventricular', 'subarachnoid', 'subdural', 'any'
+    ])
+    test_df['ID'] = test_img_paths
+    print(test_df)
 
-    test_df['diagnosis'] = preds
-    test_df.to_csv('probs/%s.csv' %args.name, index=False)
+    # Unpivot table, i.e. wide (N x 6) to long format (6N x 1)
+    test_df = test_df.melt(id_vars=['ID'])
+    print(test_df)
 
-    thrs = [0.5, 1.5, 2.5, 3.5]
-    preds[preds < thrs[0]] = 0
-    preds[(preds >= thrs[0]) & (preds < thrs[1])] = 1
-    preds[(preds >= thrs[1]) & (preds < thrs[2])] = 2
-    preds[(preds >= thrs[2]) & (preds < thrs[3])] = 3
-    preds[preds >= thrs[3]] = 4
-    preds = preds.astype('int')
+    # Combine the filename column with the variable column
+    test_df['ID'] = test_df.ID.apply(lambda x: os.path.basename(x).replace('.png', '')) + '_' + test_df.variable
+    test_df['Label'] = test_df['value']
 
-    test_df['diagnosis'] = preds
-    test_df.to_csv('submissions/%s.csv' %args.name, index=False)
+    test_df[['ID', 'Label']].to_csv('submissions/%s.csv' %args.name, index=False)
 
 
 if __name__ == '__main__':

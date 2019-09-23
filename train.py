@@ -27,10 +27,8 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
 import torch.backends.cudnn as cudnn
-
-from albumentations import Compose
-from albumentations.augmentations import transforms
-from albumentations.pytorch.transforms import ToTensor
+import torchvision
+from torchvision import datasets, models, transforms
 
 from lib.dataset import Dataset
 from lib.models.model_factory import get_model
@@ -38,7 +36,7 @@ from lib.utils import *
 from lib.metrics import *
 from lib.losses import *
 from lib.optimizers import *
-from lib.preprocess import resize_images
+from lib.preprocess import resize
 
 
 def parse_args():
@@ -54,7 +52,8 @@ def parse_args():
     parser.add_argument('--loss', default='BCEWithLogitsLoss',)
     parser.add_argument('--epochs', default=10, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('--steps_per_epoch', default=None, type=int)
+    parser.add_argument('--train_steps', default=None, type=int)
+    parser.add_argument('--val_steps', default=None, type=int)
     parser.add_argument('-b', '--batch_size', default=32, type=int,
                         metavar='N', help='mini-batch size (default: 32)')
     parser.add_argument('--img_size', default=256, type=int,
@@ -89,6 +88,9 @@ def parse_args():
     parser.add_argument('--translate_min', default=0, type=float)
     parser.add_argument('--translate_max', default=0, type=float)
     parser.add_argument('--flip', default=False, type=str2bool)
+    parser.add_argument('--contrast', default=False, type=str2bool)
+    parser.add_argument('--contrast_min', default=0.9, type=float)
+    parser.add_argument('--contrast_max', default=1.1, type=float)
     parser.add_argument('--random_erase', default=False, type=str2bool)
     parser.add_argument('--random_erase_prob', default=0.5, type=float)
     parser.add_argument('--random_erase_sl', default=0.02, type=float)
@@ -100,6 +102,7 @@ def parse_args():
     parser.add_argument('--n_splits', default=5, type=int)
     parser.add_argument('--class_aware', default=False, type=str2bool)
     parser.add_argument('--under_sampling', default=False, type=str2bool)
+    parser.add_argument('--under_sampling_rate', default=0.2, type=float)
     parser.add_argument('--under_sampling_seed', default=41, type=float)
 
     parser.add_argument('--num_workers', default=0, type=int)
@@ -115,10 +118,10 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
 
     model.train()
 
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader) if args.steps_per_epoch is None else args.steps_per_epoch)
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader) if args.train_steps is None else args.train_steps)
     for i, (input, target) in pbar:
-        if args.steps_per_epoch is not None:
-            if i >= args.steps_per_epoch:
+        if args.train_steps is not None:
+            if i >= args.train_steps:
                 break
 
         input = input.cuda()
@@ -151,8 +154,11 @@ def validate(args, val_loader, model, criterion):
     model.eval()
 
     with torch.no_grad():
-        pbar = tqdm(enumerate(val_loader), total=len(val_loader))
+        pbar = tqdm(enumerate(val_loader), total=len(val_loader) if args.val_steps is None else args.val_steps)
         for i, (input, target) in pbar:
+            if args.val_steps is not None:
+                if i >= args.val_steps:
+                    break
             input = input.cuda()
             target = target.cuda()
 
@@ -194,6 +200,8 @@ def main():
         criterion = nn.CrossEntropyLoss().cuda()
     elif args.loss == 'BCEWithLogitsLoss':
         criterion = nn.BCEWithLogitsLoss().cuda()
+    elif args.loss == 'WeightedBCEWithLogitsLoss':
+        criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([1., 1., 1., 1., 1., 2.])).cuda()
     elif args.loss == 'FocalLoss':
         criterion = FocalLoss().cuda()
     else:
@@ -203,23 +211,38 @@ def main():
 
     cudnn.benchmark = True
 
-    train_transform = Compose([
-        transforms.Resize(args.img_size, args.img_size),
-        transforms.ShiftScaleRotate(
-            shift_limit=(args.translate_min, args.translate_max) if args.translate else 0,
-            scale_limit=(args.rescale_min, args.rescale_max) if args.rescale else 0,
-            rotate_limit=(args.rotate_min, args.rotate_max) if args.rotate else 0,
+    train_transform = transforms.Compose([
+        transforms.Resize((args.img_size, args.img_size)),
+        transforms.RandomAffine(
+            degrees=(args.rotate_min, args.rotate_max) if args.rotate else 0,
+            translate=(args.translate_min, args.translate_max) if args.translate else None,
+            scale=(args.rescale_min, args.rescale_max) if args.rescale else None,
+            shear=(args.shear_min, args.shear_max) if args.shear else None,
         ),
-        transforms.Flip(p=0.5 if args.flip else 0),
-        transforms.Normalize(),
+        transforms.RandomHorizontalFlip(p=0.5 if args.flip else 0),
+        transforms.RandomVerticalFlip(p=0.5 if args.flip else 0),
+        transforms.ColorJitter(
+            brightness=0,
+            contrast=args.contrast,
+            saturation=0,
+            hue=0),
+        RandomErase(
+            prob=args.random_erase_prob if args.random_erase else 0,
+            sl=args.random_erase_sl,
+            sh=args.random_erase_sh,
+            r=args.random_erase_r),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    val_transform = Compose([
-        transforms.Resize(args.img_size, args.img_size),
-        transforms.Normalize(),
+    val_transform = transforms.Compose([
+        transforms.Resize((args.img_size, args.img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    stage_1_train_dir = resize_images('stage_1_train', args.img_size)
+    stage_1_train_dir = resize('stage_1_train', args.img_size)
+    print(stage_1_train_dir)
     df = pd.read_csv('inputs/stage_1_train.csv')
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])
     labels = np.array([df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')
@@ -241,23 +264,21 @@ def main():
             # best_scores.append(best_score)
             continue
 
-        if args.under_sampling:
-            sampler = RandomUnderSampler(sampling_strategy='majority', random_state=args.under_sampling_seed)
-            train_idx, _ = sampler.fit_sample(train_idx[:, None], np.sum([2**c * labels[train_idx, c] for c in range(labels.shape[1])], axis=0))
-            train_idx = train_idx[:, 0]
-
         train_img_paths, val_img_paths = img_paths[train_idx], img_paths[val_idx]
         train_labels, val_labels = labels[train_idx], labels[val_idx]
 
         # train
-        _, class_sample_counts = np.unique(train_labels, return_counts=True)
-        # print(class_sample_counts)
-        weights = 1. / torch.tensor(class_sample_counts, dtype=torch.float)
-        samples_weights = weights[train_labels]
-        sampler = WeightedRandomSampler(
-            weights=samples_weights,
-            num_samples=len(train_idx),
-            replacement=False)
+        if args.under_sampling:
+            binary_train_labels = (np.sum([2**c * labels[train_idx, c] for c in range(labels.shape[1])], axis=0) != 0).astype('int')
+            _, class_sample_counts = np.unique(binary_train_labels, return_counts=True)
+            print(class_sample_counts)
+            class_sample_counts[0] *= args.under_sampling_rate
+            weights = torch.tensor(class_sample_counts, dtype=torch.float)
+            samples_weights = weights[binary_train_labels]
+            sampler = WeightedRandomSampler(
+                weights=samples_weights,
+                num_samples=int(sum(class_sample_counts)),
+                replacement=False)
         train_set = Dataset(
             train_img_paths,
             train_labels,
@@ -265,9 +286,11 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
-            shuffle=False if args.class_aware else True,
+            shuffle=False if args.under_sampling else True,
             num_workers=args.num_workers,
-            sampler=sampler if args.class_aware else None)
+            sampler=sampler if args.under_sampling else None,
+            # pin_memory=True,
+        )
 
         val_set = Dataset(
             val_img_paths,
@@ -277,7 +300,9 @@ def main():
             val_set,
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers)
+            num_workers=args.num_workers,
+            # pin_memory=True,
+        )
 
         # create model
         model = get_model(model_name=args.arch,
@@ -351,6 +376,16 @@ def main():
             # log['val_score'].append(val_score)
 
             pd.DataFrame(log).to_csv('models/%s/log_%d.csv' % (args.name, fold+1), index=False)
+
+            state = {
+                'fold': fold + 1,
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_loss': best_loss,
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+            }
+            torch.save(state, 'models/%s/checkpoint_%d.pth.tar' % args.name)
 
             if val_loss < best_loss:
                 torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
