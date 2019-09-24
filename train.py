@@ -49,7 +49,7 @@ def parse_args():
                         ' (default: resnet34)')
     parser.add_argument('--freeze_bn', default=True, type=str2bool)
     parser.add_argument('--dropout_p', default=0, type=float)
-    parser.add_argument('--loss', default='BCEWithLogitsLoss',)
+    parser.add_argument('--loss', default='WeightedBCEWithLogitsLoss',)
     parser.add_argument('--epochs', default=10, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--train_steps', default=None, type=int)
@@ -79,15 +79,16 @@ def parse_args():
     parser.add_argument('--rotate_min', default=-180, type=int)
     parser.add_argument('--rotate_max', default=180, type=int)
     parser.add_argument('--rescale', default=False, type=str2bool)
-    parser.add_argument('--rescale_min', default=0.8889, type=float)
-    parser.add_argument('--rescale_max', default=1.0, type=float)
+    parser.add_argument('--rescale_min', default=0.9, type=float)
+    parser.add_argument('--rescale_max', default=1.1, type=float)
     parser.add_argument('--shear', default=False, type=str2bool)
     parser.add_argument('--shear_min', default=-36, type=int)
     parser.add_argument('--shear_max', default=36, type=int)
     parser.add_argument('--translate', default=False, type=str2bool)
-    parser.add_argument('--translate_min', default=0, type=float)
-    parser.add_argument('--translate_max', default=0, type=float)
-    parser.add_argument('--flip', default=False, type=str2bool)
+    parser.add_argument('--translate_min', default=-0.0625, type=float)
+    parser.add_argument('--translate_max', default=0.0625, type=float)
+    parser.add_argument('--hflip', default=False, type=str2bool)
+    parser.add_argument('--vflip', default=False, type=str2bool)
     parser.add_argument('--contrast', default=False, type=str2bool)
     parser.add_argument('--contrast_min', default=0.9, type=float)
     parser.add_argument('--contrast_max', default=1.1, type=float)
@@ -219,8 +220,8 @@ def main():
             scale=(args.rescale_min, args.rescale_max) if args.rescale else None,
             shear=(args.shear_min, args.shear_max) if args.shear else None,
         ),
-        transforms.RandomHorizontalFlip(p=0.5 if args.flip else 0),
-        transforms.RandomVerticalFlip(p=0.5 if args.flip else 0),
+        transforms.RandomHorizontalFlip(p=0.5 if args.hflip else 0),
+        transforms.RandomVerticalFlip(p=0.5 if args.vflip else 0),
         transforms.ColorJitter(
             brightness=0,
             contrast=args.contrast,
@@ -377,15 +378,15 @@ def main():
 
             pd.DataFrame(log).to_csv('models/%s/log_%d.csv' % (args.name, fold+1), index=False)
 
-            state = {
-                'fold': fold + 1,
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'best_loss': best_loss,
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-            }
-            torch.save(state, 'models/%s/checkpoint_%d.pth.tar' % args.name)
+            # state = {
+            #     'fold': fold + 1,
+            #     'epoch': epoch + 1,
+            #     'state_dict': model.state_dict(),
+            #     'best_loss': best_loss,
+            #     'optimizer': optimizer.state_dict(),
+            #     'scheduler': scheduler.state_dict(),
+            # }
+            # torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
 
             if val_loss < best_loss:
                 torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
