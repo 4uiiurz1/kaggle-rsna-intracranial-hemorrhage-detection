@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pandas as pd
 import joblib
+import cv2
 from imblearn.under_sampling import RandomUnderSampler
 
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, KFold
 from skimage.io import imread
 
 import torch
@@ -28,7 +29,11 @@ from torch.utils.data import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
 import torch.backends.cudnn as cudnn
 import torchvision
-from torchvision import datasets, models, transforms
+
+from albumentations.augmentations import transforms
+from albumentations.core.composition import Compose
+from albumentations.pytorch.transforms import ToTensor
+from albumentations.core.transforms_interface import NoOp
 
 from lib.dataset import Dataset
 from lib.models.model_factory import get_model
@@ -75,28 +80,16 @@ def parse_args():
                         help='nesterov')
 
     # data augmentation
-    parser.add_argument('--rotate', default=False, type=str2bool)
-    parser.add_argument('--rotate_min', default=-180, type=int)
-    parser.add_argument('--rotate_max', default=180, type=int)
-    parser.add_argument('--rescale', default=False, type=str2bool)
-    parser.add_argument('--rescale_min', default=0.9, type=float)
-    parser.add_argument('--rescale_max', default=1.1, type=float)
-    parser.add_argument('--shear', default=False, type=str2bool)
-    parser.add_argument('--shear_min', default=-36, type=int)
-    parser.add_argument('--shear_max', default=36, type=int)
-    parser.add_argument('--translate', default=False, type=str2bool)
-    parser.add_argument('--translate_min', default=-0.0625, type=float)
-    parser.add_argument('--translate_max', default=0.0625, type=float)
-    parser.add_argument('--hflip', default=False, type=str2bool)
+    parser.add_argument('--hflip', default=True, type=str2bool)
     parser.add_argument('--vflip', default=False, type=str2bool)
+    parser.add_argument('--shift_scale_rotate', default=True, type=str2bool)
+    parser.add_argument('--shift_scale_rotate_p', default=0.5, type=float)
+    parser.add_argument('--shift_limit', default=0.0625, type=float)
+    parser.add_argument('--scale_limit', default=0.1, type=float)
+    parser.add_argument('--rotate_limit', default=0, type=int)
     parser.add_argument('--contrast', default=False, type=str2bool)
-    parser.add_argument('--contrast_min', default=0.9, type=float)
-    parser.add_argument('--contrast_max', default=1.1, type=float)
-    parser.add_argument('--random_erase', default=False, type=str2bool)
-    parser.add_argument('--random_erase_prob', default=0.5, type=float)
-    parser.add_argument('--random_erase_sl', default=0.02, type=float)
-    parser.add_argument('--random_erase_sh', default=0.4, type=float)
-    parser.add_argument('--random_erase_r', default=0.3, type=float)
+    parser.add_argument('--contrast_p', default=0.5, type=float)
+    parser.add_argument('--contrast_limit', default=0.2, type=float)
 
     # dataset
     parser.add_argument('--cv', default=False, type=str2bool)
@@ -106,7 +99,7 @@ def parse_args():
     parser.add_argument('--under_sampling_rate', default=0.2, type=float)
     parser.add_argument('--under_sampling_seed', default=41, type=float)
 
-    parser.add_argument('--num_workers', default=0, type=int)
+    parser.add_argument('--num_workers', default=6, type=int)
 
     args = parser.parse_args()
 
@@ -212,34 +205,30 @@ def main():
 
     cudnn.benchmark = True
 
-    train_transform = transforms.Compose([
-        transforms.Resize((args.img_size, args.img_size)),
-        transforms.RandomAffine(
-            degrees=(args.rotate_min, args.rotate_max) if args.rotate else 0,
-            translate=(args.translate_min, args.translate_max) if args.translate else None,
-            scale=(args.rescale_min, args.rescale_max) if args.rescale else None,
-            shear=(args.shear_min, args.shear_max) if args.shear else None,
-        ),
-        transforms.RandomHorizontalFlip(p=0.5 if args.hflip else 0),
-        transforms.RandomVerticalFlip(p=0.5 if args.vflip else 0),
-        transforms.ColorJitter(
-            brightness=0,
-            contrast=args.contrast,
-            saturation=0,
-            hue=0),
-        RandomErase(
-            prob=args.random_erase_prob if args.random_erase else 0,
-            sl=args.random_erase_sl,
-            sh=args.random_erase_sh,
-            r=args.random_erase_r),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    train_transform = Compose([
+        transforms.Resize(args.img_size, args.img_size),
+        transforms.HorizontalFlip() if args.hflip else NoOp(),
+        transforms.VerticalFlip() if args.vflip else NoOp(),
+        transforms.ShiftScaleRotate(
+            shift_limit=args.shift_limit,
+            scale_limit=args.scale_limit,
+            rotate_limit=args.rotate_limit,
+            border_mode=cv2.BORDER_CONSTANT,
+            value=0,
+            p=args.shift_scale_rotate_p
+        ) if args.shift_scale_rotate else NoOp(),
+        transforms.RandomContrast(
+            limit=args.contrast_limit,
+            p=args.contrast_p
+        ) if args.contrast else NoOp(),
+        transforms.Normalize(),
+        ToTensor(),
     ])
 
-    val_transform = transforms.Compose([
-        transforms.Resize((args.img_size, args.img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    val_transform = Compose([
+        transforms.Resize(args.img_size, args.img_size),
+        transforms.Normalize(),
+        ToTensor(),
     ])
 
     stage_1_train_dir = resize('stage_1_train', args.img_size)
@@ -248,12 +237,46 @@ def main():
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])
     labels = np.array([df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')
 
+    df = df[::6]
+    df['img_paths'] = img_paths
+    for c in range(6):
+        df['label_%d' %c] = labels[:, c]
+
+    meta_df = pd.read_csv('processed/stage_1_train_with_metadata.csv')
+    test_meta_df = pd.read_csv('processed/stage_1_test_with_metadata.csv')
+    df = pd.merge(df, meta_df, how='left')
+
+    patient_ids = meta_df['PatientID'].unique()
+    test_patiend_ids = test_meta_df['PatientID'].unique()
+    patient_ids = np.array([s for s in patient_ids if not s in test_patiend_ids])
+
+    kf = KFold(n_splits=args.n_splits, shuffle=True, random_state=41)
+    img_path_sets = []
+    label_sets = []
+    for fold, (train_idx, val_idx) in enumerate(kf.split(patient_ids)):
+        train_patient_ids = patient_ids[train_idx]
+        val_patient_ids = patient_ids[val_idx]
+        train_img_paths = np.hstack(df[['img_paths', 'PatientID']].groupby(['PatientID'])['img_paths'].apply(np.array).loc[train_patient_ids].to_list()).astype('str')
+        val_img_paths = np.hstack(df[['img_paths', 'PatientID']].groupby(['PatientID'])['img_paths'].apply(np.array).loc[val_patient_ids].to_list()).astype('str')
+        train_labels = []
+        for c in range(6):
+            train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[train_patient_ids].to_list()))
+        train_labels = np.array(train_labels).T
+        val_labels = []
+        for c in range(6):
+            val_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[val_patient_ids].to_list()))
+        val_labels = np.array(val_labels).T
+        img_path_sets.append((train_img_paths, val_img_paths))
+        label_sets.append((train_labels, val_labels))
+
+        if not args.cv:
+            break
+
     folds = []
     best_losses = []
     # best_scores = []
 
-    skf = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=41)
-    for fold, (train_idx, val_idx) in enumerate(skf.split(img_paths, np.sum([2**c * labels[:, c] for c in range(labels.shape[1])], axis=0))):
+    for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
         print('Fold [%d/%d]' %(fold+1, args.n_splits))
 
         if os.path.exists('models/%s/model_%d.pth' % (args.name, fold+1)):
@@ -264,9 +287,6 @@ def main():
             best_losses.append(best_loss)
             # best_scores.append(best_score)
             continue
-
-        train_img_paths, val_img_paths = img_paths[train_idx], img_paths[val_idx]
-        train_labels, val_labels = labels[train_idx], labels[val_idx]
 
         # train
         if args.under_sampling:
