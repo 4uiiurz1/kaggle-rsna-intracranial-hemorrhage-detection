@@ -28,6 +28,11 @@ import torch.backends.cudnn as cudnn
 import torchvision
 from torchvision import datasets, models, transforms
 
+from albumentations.augmentations import transforms
+from albumentations.core.composition import Compose
+from albumentations.pytorch.transforms import ToTensor
+from albumentations.core.transforms_interface import NoOp
+
 from lib.dataset import Dataset
 from lib.models.model_factory import get_model
 from lib.utils import *
@@ -72,14 +77,19 @@ def main():
         print('%s: %s' % (arg, getattr(args, arg)))
     print('------------')
 
-    num_outputs = 6
+    if args.pred_type == 'all':
+        num_outputs = 6
+    elif args.pred_type == 'except_any':
+        num_outputs = 5
+    else:
+        raise NotImplementedError
 
     cudnn.benchmark = True
 
-    test_transform = transforms.Compose([
-        transforms.Resize((args.img_size, args.img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    test_transform = Compose([
+        transforms.Resize(args.img_size, args.img_size),
+        transforms.Normalize(),
+        ToTensor(),
     ])
 
     # data loading code
@@ -122,7 +132,10 @@ def main():
             for i, (input, _) in tqdm(enumerate(test_loader), total=len(test_loader)):
                 input = input.cuda()
                 output = model(input)
-                preds_fold.append(torch.sigmoid(output).data.cpu().numpy())
+                output = torch.sigmoid(output)
+                if args.pred_type == 'except_any':
+                    output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+                preds_fold.append(output.data.cpu().numpy())
         preds_fold = np.vstack(preds_fold)
         preds.append(preds_fold)
 
@@ -135,11 +148,9 @@ def main():
         'epidural', 'intraparenchymal', 'intraventricular', 'subarachnoid', 'subdural', 'any'
     ])
     test_df['ID'] = test_img_paths
-    print(test_df)
 
     # Unpivot table, i.e. wide (N x 6) to long format (6N x 1)
     test_df = test_df.melt(id_vars=['ID'])
-    print(test_df)
 
     # Combine the filename column with the variable column
     test_df['ID'] = test_df.ID.apply(lambda x: os.path.basename(x).replace('.png', '')) + '_' + test_df.variable

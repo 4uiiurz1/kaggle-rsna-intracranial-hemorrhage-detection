@@ -16,7 +16,7 @@ import joblib
 import cv2
 from imblearn.under_sampling import RandomUnderSampler
 
-from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from skimage.io import imread
 
 import torch
@@ -42,6 +42,7 @@ from lib.metrics import *
 from lib.losses import *
 from lib.optimizers import *
 from lib.preprocess import resize
+from lib.augmentations import *
 
 
 def parse_args():
@@ -55,7 +56,7 @@ def parse_args():
     parser.add_argument('--freeze_bn', default=True, type=str2bool)
     parser.add_argument('--dropout_p', default=0, type=float)
     parser.add_argument('--loss', default='WeightedBCEWithLogitsLoss',)
-    parser.add_argument('--epochs', default=10, type=int, metavar='N',
+    parser.add_argument('--epochs', default=5, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--train_steps', default=None, type=int)
     parser.add_argument('--val_steps', default=None, type=int)
@@ -78,6 +79,8 @@ def parse_args():
                         help='weight decay')
     parser.add_argument('--nesterov', default=False, type=str2bool,
                         help='nesterov')
+    parser.add_argument('--pred_type', default='all',
+                        choices=['all', 'except_any'])
 
     # data augmentation
     parser.add_argument('--hflip', default=True, type=str2bool)
@@ -90,16 +93,14 @@ def parse_args():
     parser.add_argument('--contrast', default=False, type=str2bool)
     parser.add_argument('--contrast_p', default=0.5, type=float)
     parser.add_argument('--contrast_limit', default=0.2, type=float)
+    parser.add_argument('--random_erase', default=False, type=str2bool)
 
     # dataset
     parser.add_argument('--cv', default=False, type=str2bool)
     parser.add_argument('--n_splits', default=5, type=int)
-    parser.add_argument('--class_aware', default=False, type=str2bool)
-    parser.add_argument('--under_sampling', default=False, type=str2bool)
-    parser.add_argument('--under_sampling_rate', default=0.2, type=float)
-    parser.add_argument('--under_sampling_seed', default=41, type=float)
 
     parser.add_argument('--num_workers', default=6, type=int)
+    parser.add_argument('--resume', action='store_true')
 
     args = parser.parse_args()
 
@@ -108,66 +109,76 @@ def parse_args():
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
     losses = AverageMeter()
-    # scores = AverageMeter()
+    scores = AverageMeter()
 
     model.train()
 
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader) if args.train_steps is None else args.train_steps)
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader))
     for i, (input, target) in pbar:
-        if args.train_steps is not None:
-            if i >= args.train_steps:
-                break
 
         input = input.cuda()
         target = target.cuda()
 
         output = model(input)
-        loss = criterion(output, target)
+        if args.pred_type == 'all':
+            loss = criterion(output, target)
+        elif args.pred_type == 'except_any':
+            loss = criterion(output, target[:, :-1])
 
         # compute gradient and do optimizing step
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # score = log_loss(output, target)
+        if args.pred_type == 'all':
+            output = torch.sigmoid(output)
+            score = log_loss(output, target)
+        elif args.pred_type == 'except_any':
+            output = torch.sigmoid(output)
+            output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+            score = log_loss(output, target)
 
         losses.update(loss.item(), input.size(0))
-        # scores.update(score, input.size(0))
-        pbar.set_description('loss %.4f' %losses.avg)
+        scores.update(score, input.size(0))
+        pbar.set_description('loss %.4f - score %.4f' %(losses.avg, scores.avg))
         pbar.update(1)
 
-    # return losses.avg, scores.avg
-    return losses.avg
+    return losses.avg, scores.avg
 
 
 def validate(args, val_loader, model, criterion):
     losses = AverageMeter()
-    # scores = AverageMeter()
+    scores = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     with torch.no_grad():
-        pbar = tqdm(enumerate(val_loader), total=len(val_loader) if args.val_steps is None else args.val_steps)
+        pbar = tqdm(enumerate(val_loader), total=len(val_loader))
         for i, (input, target) in pbar:
-            if args.val_steps is not None:
-                if i >= args.val_steps:
-                    break
             input = input.cuda()
             target = target.cuda()
 
             output = model(input)
-            loss = criterion(output, target)
+            if args.pred_type == 'all':
+                loss = criterion(output, target)
+            elif args.pred_type == 'except_any':
+                loss = criterion(output, target[:, :-1])
 
-            # score = log_loss(output, target)
+            if args.pred_type == 'all':
+                output = torch.sigmoid(output)
+                score = log_loss(output, target)
+            elif args.pred_type == 'except_any':
+                output = torch.sigmoid(output)
+                output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+                score = log_loss(output, target)
 
             losses.update(loss.item(), input.size(0))
-            # scores.update(score, input.size(0))
-            pbar.set_description('val_loss %.4f' %losses.avg)
+            scores.update(score, input.size(0))
+            pbar.set_description('val_loss %.4f - val_score %.4f' %(losses.avg, scores.avg))
             pbar.update(1)
 
-    # return losses.avg, scores.avg
-    return losses.avg
+    return losses.avg, scores.avg
 
 
 def main():
@@ -178,6 +189,10 @@ def main():
 
     if not os.path.exists('models/%s' % args.name):
         os.makedirs('models/%s' % args.name)
+
+    if args.resume:
+        args = joblib.load('models/%s/args.pkl' % args.name)
+        args.resume = True
 
     print('Config -----')
     for arg in vars(args):
@@ -198,10 +213,17 @@ def main():
         criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([1., 1., 1., 1., 1., 2.])).cuda()
     elif args.loss == 'FocalLoss':
         criterion = FocalLoss().cuda()
+    elif args.loss == 'WeightedFocalLoss':
+        criterion = FocalLoss(weight=torch.Tensor([1., 1., 1., 1., 1., 2.])).cuda()
     else:
         raise NotImplementedError
 
-    num_outputs = 6
+    if args.pred_type == 'all':
+        num_outputs = 6
+    elif args.pred_type == 'except_any':
+        num_outputs = 5
+    else:
+        raise NotImplementedError
 
     cudnn.benchmark = True
 
@@ -221,6 +243,7 @@ def main():
             limit=args.contrast_limit,
             p=args.contrast_p
         ) if args.contrast else NoOp(),
+        RandomErase() if args.random_erase else NoOp(),
         transforms.Normalize(),
         ToTensor(),
     ])
@@ -237,69 +260,29 @@ def main():
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])
     labels = np.array([df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')
 
-    df = df[::6]
-    df['img_paths'] = img_paths
-    for c in range(6):
-        df['label_%d' %c] = labels[:, c]
-
-    meta_df = pd.read_csv('processed/stage_1_train_with_metadata.csv')
-    test_meta_df = pd.read_csv('processed/stage_1_test_with_metadata.csv')
-    df = pd.merge(df, meta_df, how='left')
-
-    patient_ids = meta_df['PatientID'].unique()
-    test_patiend_ids = test_meta_df['PatientID'].unique()
-    patient_ids = np.array([s for s in patient_ids if not s in test_patiend_ids])
-
-    kf = KFold(n_splits=args.n_splits, shuffle=True, random_state=41)
-    img_path_sets = []
-    label_sets = []
-    for fold, (train_idx, val_idx) in enumerate(kf.split(patient_ids)):
-        train_patient_ids = patient_ids[train_idx]
-        val_patient_ids = patient_ids[val_idx]
-        train_img_paths = np.hstack(df[['img_paths', 'PatientID']].groupby(['PatientID'])['img_paths'].apply(np.array).loc[train_patient_ids].to_list()).astype('str')
-        val_img_paths = np.hstack(df[['img_paths', 'PatientID']].groupby(['PatientID'])['img_paths'].apply(np.array).loc[val_patient_ids].to_list()).astype('str')
-        train_labels = []
-        for c in range(6):
-            train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[train_patient_ids].to_list()))
-        train_labels = np.array(train_labels).T
-        val_labels = []
-        for c in range(6):
-            val_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[val_patient_ids].to_list()))
-        val_labels = np.array(val_labels).T
-        img_path_sets.append((train_img_paths, val_img_paths))
-        label_sets.append((train_labels, val_labels))
-
-        if not args.cv:
-            break
+    if args.resume:
+        checkpoint = torch.load('models/%s/checkpoint.pth.tar' % args.name)
 
     folds = []
     best_losses = []
-    # best_scores = []
+    best_scores = []
 
-    for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
+    skf = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=41)
+    for fold, (train_idx, val_idx) in enumerate(skf.split(img_paths, np.sum([2**c * labels[:, c] for c in range(labels.shape[1])], axis=0))):
         print('Fold [%d/%d]' %(fold+1, args.n_splits))
 
-        if os.path.exists('models/%s/model_%d.pth' % (args.name, fold+1)):
+        if args.resume and fold < checkpoint['fold'] - 1:
             log = pd.read_csv('models/%s/log_%d.csv' %(args.name, fold+1))
-            # best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
-            best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss'].values
+            best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
             folds.append(str(fold + 1))
             best_losses.append(best_loss)
-            # best_scores.append(best_score)
+            best_scores.append(best_score)
             continue
 
+        train_img_paths, val_img_paths = img_paths[train_idx], img_paths[val_idx]
+        train_labels, val_labels = labels[train_idx], labels[val_idx]
+
         # train
-        if args.under_sampling:
-            binary_train_labels = (np.sum([2**c * labels[train_idx, c] for c in range(labels.shape[1])], axis=0) != 0).astype('int')
-            _, class_sample_counts = np.unique(binary_train_labels, return_counts=True)
-            print(class_sample_counts)
-            class_sample_counts[0] *= args.under_sampling_rate
-            weights = torch.tensor(class_sample_counts, dtype=torch.float)
-            samples_weights = weights[binary_train_labels]
-            sampler = WeightedRandomSampler(
-                weights=samples_weights,
-                num_samples=int(sum(class_sample_counts)),
-                replacement=False)
         train_set = Dataset(
             train_img_paths,
             train_labels,
@@ -307,9 +290,8 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
-            shuffle=False if args.under_sampling else True,
+            shuffle=True,
             num_workers=args.num_workers,
-            sampler=sampler if args.under_sampling else None,
             # pin_memory=True,
         )
 
@@ -353,78 +335,79 @@ def main():
             scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, factor=args.factor, patience=args.patience,
                                                        verbose=1, min_lr=args.min_lr)
 
-        # log = pd.DataFrame(index=[], columns=[
-        #     'epoch', 'loss', 'score', 'val_loss', 'val_score'
-        # ])
-        log = pd.DataFrame(index=[], columns=[
-            'epoch', 'loss', 'val_loss'
-        ])
         log = {
             'epoch': [],
             'loss': [],
-            # 'score': [],
+            'score': [],
             'val_loss': [],
-            # 'val_score': [],
+            'val_score': [],
         }
 
         best_loss = float('inf')
-        best_score = 0
-        for epoch in range(args.epochs):
+        best_score = float('inf')
+
+        start_epoch = 0
+
+        if args.resume and fold == checkpoint['fold'] - 1:
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            start_epoch = checkpoint['epoch']
+            log = pd.read_csv('models/%s/log_%d.csv' % (args.name, fold+1)).to_dict(orient='list')
+            best_loss = checkpoint['best_loss']
+
+        for epoch in range(start_epoch, args.epochs):
             print('Epoch [%d/%d]' % (epoch + 1, args.epochs))
 
             # train for one epoch
-            # train_loss, train_score = train(
-            #     args, train_loader, model, criterion, optimizer, epoch)
-            train_loss = train(args, train_loader, model, criterion, optimizer, epoch)
+            train_loss, train_score = train(
+                args, train_loader, model, criterion, optimizer, epoch)
             # evaluate on validation set
-            # val_loss, val_score = validate(args, val_loader, model, criterion)
-            val_loss = validate(args, val_loader, model, criterion)
+            val_loss, val_score = validate(args, val_loader, model, criterion)
 
             if args.scheduler == 'CosineAnnealingLR':
                 scheduler.step()
             elif args.scheduler == 'ReduceLROnPlateau':
                 scheduler.step(val_loss)
 
-            # print('loss %.4f - score %.4f - val_loss %.4f - val_score %.4f'
-            #       % (train_loss, train_score, val_loss, val_score))
-            print('loss %.4f - val_loss %.4f'
-                  % (train_loss, val_loss))
+            print('loss %.4f - score %.4f - val_loss %.4f - val_score %.4f'
+                  % (train_loss, train_score, val_loss, val_score))
 
             log['epoch'].append(epoch)
             log['loss'].append(train_loss)
-            # log['score'].append(train_score)
+            log['score'].append(train_score)
             log['val_loss'].append(val_loss)
-            # log['val_score'].append(val_score)
+            log['val_score'].append(val_score)
 
             pd.DataFrame(log).to_csv('models/%s/log_%d.csv' % (args.name, fold+1), index=False)
 
-            # state = {
-            #     'fold': fold + 1,
-            #     'epoch': epoch + 1,
-            #     'state_dict': model.state_dict(),
-            #     'best_loss': best_loss,
-            #     'optimizer': optimizer.state_dict(),
-            #     'scheduler': scheduler.state_dict(),
-            # }
-            # torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
+            state = {
+                'fold': fold + 1,
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_loss': best_loss,
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+            }
+            torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
 
             if val_loss < best_loss:
                 torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
                 best_loss = val_loss
-                # best_score = val_score
+                best_score = val_score
                 print("=> saved best model")
 
         print('val_loss:  %f' % best_loss)
-        # print('val_score: %f' % best_score)
+        print('val_score: %f' % best_score)
 
         folds.append(str(fold + 1))
         best_losses.append(best_loss)
-        # best_scores.append(best_score)
+        best_scores.append(best_score)
 
         results = pd.DataFrame({
             'fold': folds + ['mean'],
             'best_loss': best_losses + [np.mean(best_losses)],
-            # 'best_score': best_scores + [np.mean(best_scores)],
+            'best_score': best_scores + [np.mean(best_scores)],
         })
 
         print(results)
