@@ -2,14 +2,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 import pretrainedmodels
-from efficientnet_pytorch import EfficientNet
+from .efficientnet import EfficientNet
 
 
 def get_model(model_name='resnet18', num_outputs=None, pretrained=True,
-              freeze_bn=False, dropout_p=0, **kwargs):
+              freeze_bn=False, dropout_p=0, pooling='avg', lp_p=3, **kwargs):
 
     if 'efficientnet' in model_name:
         model = EfficientNet.from_pretrained(model_name, num_classes=num_outputs)
+        model.pooling = pooling
+        model.lp_p = lp_p
 
     elif 'densenet' in model_name:
         model = models.__dict__[model_name](num_classes=1000,

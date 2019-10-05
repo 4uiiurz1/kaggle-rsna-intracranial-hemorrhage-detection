@@ -50,11 +50,13 @@ def parse_args():
 
     parser.add_argument('--name', default=None,
                         help='model name: (default: arch+timestamp)')
-    parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet34',
+    parser.add_argument('--arch', '-a', metavar='ARCH', default='efficientnet-b0',
                         help='model architecture: ' +
                         ' (default: resnet34)')
-    parser.add_argument('--freeze_bn', default=True, type=str2bool)
+    parser.add_argument('--freeze_bn', default=False, type=str2bool)
     parser.add_argument('--dropout_p', default=0, type=float)
+    parser.add_argument('--pooling', default='avg')
+    parser.add_argument('--lp_p', default=2, type=int)
     parser.add_argument('--loss', default='WeightedBCEWithLogitsLoss')
     parser.add_argument('--label_smooth', default=0, type=float)
     parser.add_argument('--epochs', default=5, type=int, metavar='N',
@@ -316,7 +318,9 @@ def main():
         model = get_model(model_name=args.arch,
                           num_outputs=num_outputs,
                           freeze_bn=args.freeze_bn,
-                          dropout_p=args.dropout_p)
+                          dropout_p=args.dropout_p,
+                          pooling=args.pooling,
+                          lp_p=args.lp_p)
         model = model.cuda()
         # print(model)
 
