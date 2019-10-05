@@ -55,7 +55,8 @@ def parse_args():
                         ' (default: resnet34)')
     parser.add_argument('--freeze_bn', default=True, type=str2bool)
     parser.add_argument('--dropout_p', default=0, type=float)
-    parser.add_argument('--loss', default='WeightedBCEWithLogitsLoss',)
+    parser.add_argument('--loss', default='WeightedBCEWithLogitsLoss')
+    parser.add_argument('--label_smooth', default=0, type=float)
     parser.add_argument('--epochs', default=5, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--train_steps', default=None, type=int)
@@ -71,11 +72,11 @@ def parse_args():
                         metavar='LR', help='initial learning rate')
     parser.add_argument('--min_lr', default=1e-5, type=float,
                         help='minimum learning rate')
-    parser.add_argument('--factor', default=0.5, type=float)
-    parser.add_argument('--patience', default=5, type=int)
+    parser.add_argument('--factor', default=0.1, type=float)
+    parser.add_argument('--patience', default=2, type=int)
     parser.add_argument('--momentum', default=0.9, type=float,
                         help='momentum')
-    parser.add_argument('--weight-decay', default=1e-4, type=float,
+    parser.add_argument('--weight_decay', default=0, type=float,
                         help='weight decay')
     parser.add_argument('--nesterov', default=False, type=str2bool,
                         help='nesterov')
@@ -109,7 +110,7 @@ def parse_args():
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
     losses = AverageMeter()
-    scores = AverageMeter()
+    # scores = AverageMeter()
 
     model.train()
 
@@ -130,25 +131,27 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
         loss.backward()
         optimizer.step()
 
-        if args.pred_type == 'all':
-            output = torch.sigmoid(output)
-            score = log_loss(output, target)
-        elif args.pred_type == 'except_any':
-            output = torch.sigmoid(output)
-            output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
-            score = log_loss(output, target)
+        # if args.pred_type == 'all':
+        #     output = torch.sigmoid(output)
+        #     score = log_loss(output, target)
+        # elif args.pred_type == 'except_any':
+        #     output = torch.sigmoid(output)
+        #     output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+        #     score = log_loss(output, target)
 
         losses.update(loss.item(), input.size(0))
-        scores.update(score, input.size(0))
-        pbar.set_description('loss %.4f - score %.4f' %(losses.avg, scores.avg))
+        # scores.update(score, input.size(0))
+        pbar.set_description('loss %.4f' %losses.avg)
+        # pbar.set_description('loss %.4f - score %.4f' %(losses.avg, scores.avg))
         pbar.update(1)
 
-    return losses.avg, scores.avg
+    return losses.avg
+    # return losses.avg, scores.avg
 
 
 def validate(args, val_loader, model, criterion):
     losses = AverageMeter()
-    scores = AverageMeter()
+    # scores = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -165,20 +168,22 @@ def validate(args, val_loader, model, criterion):
             elif args.pred_type == 'except_any':
                 loss = criterion(output, target[:, :-1])
 
-            if args.pred_type == 'all':
-                output = torch.sigmoid(output)
-                score = log_loss(output, target)
-            elif args.pred_type == 'except_any':
-                output = torch.sigmoid(output)
-                output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
-                score = log_loss(output, target)
+            # if args.pred_type == 'all':
+            #     output = torch.sigmoid(output)
+            #     score = log_loss(output, target)
+            # elif args.pred_type == 'except_any':
+            #     output = torch.sigmoid(output)
+            #     output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+            #     score = log_loss(output, target)
 
             losses.update(loss.item(), input.size(0))
-            scores.update(score, input.size(0))
-            pbar.set_description('val_loss %.4f - val_score %.4f' %(losses.avg, scores.avg))
+            # scores.update(score, input.size(0))
+            pbar.set_description('val_loss %.4f' %losses.avg)
+            # pbar.set_description('val_loss %.4f - val_score %.4f' %(losses.avg, scores.avg))
             pbar.update(1)
 
-    return losses.avg, scores.avg
+    return losses.avg
+    # return losses.avg, scores.avg
 
 
 def main():
@@ -205,12 +210,11 @@ def main():
 
     joblib.dump(args, 'models/%s/args.pkl' % args.name)
 
-    if args.loss == 'CrossEntropyLoss':
-        criterion = nn.CrossEntropyLoss().cuda()
-    elif args.loss == 'BCEWithLogitsLoss':
-        criterion = nn.BCEWithLogitsLoss().cuda()
+    if args.loss == 'BCEWithLogitsLoss':
+        criterion = BCEWithLogitsLoss().cuda()
     elif args.loss == 'WeightedBCEWithLogitsLoss':
-        criterion = nn.BCEWithLogitsLoss(weight=torch.Tensor([1., 1., 1., 1., 1., 2.])).cuda()
+        criterion = BCEWithLogitsLoss(weight=torch.Tensor([1., 1., 1., 1., 1., 2.]),
+                                      smooth=args.label_smooth).cuda()
     elif args.loss == 'FocalLoss':
         criterion = FocalLoss().cuda()
     elif args.loss == 'WeightedFocalLoss':
@@ -254,7 +258,7 @@ def main():
         ToTensor(),
     ])
 
-    stage_1_train_dir = resize('stage_1_train', args.img_size)
+    stage_1_train_dir = resize('stage_1_train', 256 if args.img_size <= 256 else args.img_size)
     print(stage_1_train_dir)
     df = pd.read_csv('inputs/stage_1_train.csv')
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])
@@ -265,7 +269,7 @@ def main():
 
     folds = []
     best_losses = []
-    best_scores = []
+    # best_scores = []
 
     skf = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=41)
     for fold, (train_idx, val_idx) in enumerate(skf.split(img_paths, np.sum([2**c * labels[:, c] for c in range(labels.shape[1])], axis=0))):
@@ -273,10 +277,11 @@ def main():
 
         if args.resume and fold < checkpoint['fold'] - 1:
             log = pd.read_csv('models/%s/log_%d.csv' %(args.name, fold+1))
-            best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
+            best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss'].values
+            # best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
             folds.append(str(fold + 1))
             best_losses.append(best_loss)
-            best_scores.append(best_score)
+            # best_scores.append(best_score)
             continue
 
         train_img_paths, val_img_paths = img_paths[train_idx], img_paths[val_idx]
@@ -317,13 +322,13 @@ def main():
 
         if args.optimizer == 'Adam':
             optimizer = optim.Adam(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
         elif args.optimizer == 'AdamW':
             optimizer = optim.AdamW(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
         elif args.optimizer == 'RAdam':
             optimizer = RAdam(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
         elif args.optimizer == 'SGD':
             optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
                                   momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
@@ -338,13 +343,13 @@ def main():
         log = {
             'epoch': [],
             'loss': [],
-            'score': [],
+            # 'score': [],
             'val_loss': [],
-            'val_score': [],
+            # 'val_score': [],
         }
 
         best_loss = float('inf')
-        best_score = float('inf')
+        # best_score = float('inf')
 
         start_epoch = 0
 
@@ -360,26 +365,35 @@ def main():
             print('Epoch [%d/%d]' % (epoch + 1, args.epochs))
 
             # train for one epoch
-            train_loss, train_score = train(
-                args, train_loader, model, criterion, optimizer, epoch)
+            train_loss = train(args, train_loader, model, criterion, optimizer, epoch)
+            # train_loss, train_score = train(
+            #     args, train_loader, model, criterion, optimizer, epoch)
             # evaluate on validation set
-            val_loss, val_score = validate(args, val_loader, model, criterion)
+            val_loss = validate(args, val_loader, model, criterion)
+            # val_loss, val_score = validate(args, val_loader, model, criterion)
 
             if args.scheduler == 'CosineAnnealingLR':
                 scheduler.step()
             elif args.scheduler == 'ReduceLROnPlateau':
                 scheduler.step(val_loss)
 
-            print('loss %.4f - score %.4f - val_loss %.4f - val_score %.4f'
-                  % (train_loss, train_score, val_loss, val_score))
+            print('loss %.4f - val_loss %.4f' % (train_loss, val_loss))
+            # print('loss %.4f - score %.4f - val_loss %.4f - val_score %.4f'
+            #       % (train_loss, train_score, val_loss, val_score))
 
             log['epoch'].append(epoch)
             log['loss'].append(train_loss)
-            log['score'].append(train_score)
+            # log['score'].append(train_score)
             log['val_loss'].append(val_loss)
-            log['val_score'].append(val_score)
+            # log['val_score'].append(val_score)
 
             pd.DataFrame(log).to_csv('models/%s/log_%d.csv' % (args.name, fold+1), index=False)
+
+            if val_loss < best_loss:
+                torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
+                best_loss = val_loss
+                # best_score = val_score
+                print("=> saved best model")
 
             state = {
                 'fold': fold + 1,
@@ -391,23 +405,17 @@ def main():
             }
             torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
 
-            if val_loss < best_loss:
-                torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
-                best_loss = val_loss
-                best_score = val_score
-                print("=> saved best model")
-
         print('val_loss:  %f' % best_loss)
-        print('val_score: %f' % best_score)
+        # print('val_score: %f' % best_score)
 
         folds.append(str(fold + 1))
         best_losses.append(best_loss)
-        best_scores.append(best_score)
+        # best_scores.append(best_score)
 
         results = pd.DataFrame({
             'fold': folds + ['mean'],
             'best_loss': best_losses + [np.mean(best_losses)],
-            'best_score': best_scores + [np.mean(best_scores)],
+            # 'best_score': best_scores + [np.mean(best_scores)],
         })
 
         print(results)

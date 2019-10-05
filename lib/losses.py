@@ -23,3 +23,23 @@ class FocalLoss(nn.Module):
             loss = torch.mean(loss)
 
         return loss
+
+
+class BCEWithLogitsLoss(nn.Module):
+    __constants__ = ['weight', 'pos_weight', 'reduction']
+
+    def __init__(self, weight=None, reduction='mean', pos_weight=None, smooth=0):
+        super(BCEWithLogitsLoss, self).__init__()
+        self.register_buffer('weight', weight)
+        self.register_buffer('pos_weight', pos_weight)
+        self.reduction = reduction
+        self.smooth = smooth
+
+    def forward(self, input, target):
+        if self.smooth != 0:
+            target = torch.clamp(target, self.smooth, 1 - self.smooth)
+
+        return F.binary_cross_entropy_with_logits(input, target,
+                                                  self.weight,
+                                                  pos_weight=self.pos_weight,
+                                                  reduction=self.reduction)
