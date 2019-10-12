@@ -39,6 +39,7 @@ from lib.utils import *
 from lib.metrics import *
 from lib.losses import *
 from lib.preprocess import resize
+from lib.augmentations import *
 
 
 def parse_args():
@@ -88,12 +89,13 @@ def main():
 
     test_transform = Compose([
         transforms.Resize(args.img_size, args.img_size),
+        ForegroundCenterCrop(args.crop_size),
         transforms.Normalize(),
         ToTensor(),
     ])
 
     # data loading code
-    stage_1_test_dir = resize('stage_1_test', 256 if args.img_size <= 256 else args.img_size)
+    stage_1_test_dir = resize('stage_1_test', 256 if args.img_size <= 256 else 512)
     print(stage_1_test_dir)
     test_df = pd.read_csv('inputs/stage_1_sample_submission.csv')
     test_img_paths = np.array([stage_1_test_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in test_df['ID']][::6])
@@ -121,7 +123,9 @@ def main():
         model = get_model(model_name=args.arch,
                           num_outputs=num_outputs,
                           freeze_bn=args.freeze_bn,
-                          dropout_p=args.dropout_p)
+                          dropout_p=args.dropout_p,
+                          pooling=args.pooling,
+                          lp_p=args.lp_p)
         model = model.cuda()
         model.load_state_dict(torch.load(model_path))
 

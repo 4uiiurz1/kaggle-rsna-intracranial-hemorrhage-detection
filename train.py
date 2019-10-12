@@ -65,8 +65,9 @@ def parse_args():
     parser.add_argument('--val_steps', default=None, type=int)
     parser.add_argument('-b', '--batch_size', default=32, type=int,
                         metavar='N', help='mini-batch size (default: 32)')
-    parser.add_argument('--img_size', default=256, type=int,
-                        help='input image size (default: 256)')
+    parser.add_argument('--img_size', default=320, type=int,
+                        help='input image size (default: 320)')
+    parser.add_argument('--crop_size', default=256, type=int)
     parser.add_argument('--optimizer', default='RAdam')
     parser.add_argument('--scheduler', default='CosineAnnealingLR',
                         choices=['CosineAnnealingLR', 'ReduceLROnPlateau'])
@@ -86,6 +87,9 @@ def parse_args():
                         choices=['all', 'except_any'])
 
     # data augmentation
+    parser.add_argument('--center_crop', default=False, type=str2bool)
+    parser.add_argument('--foreground_center_crop', default=False, type=str2bool)
+    parser.add_argument('--random_crop', default=True, type=str2bool)
     parser.add_argument('--hflip', default=True, type=str2bool)
     parser.add_argument('--vflip', default=False, type=str2bool)
     parser.add_argument('--shift_scale_rotate', default=True, type=str2bool)
@@ -250,17 +254,21 @@ def main():
             p=args.contrast_p
         ) if args.contrast else NoOp(),
         RandomErase() if args.random_erase else NoOp(),
+        transforms.CenterCrop(args.crop_size, args.crop_size) if args.center_crop else NoOp(),
+        ForegroundCenterCrop(args.crop_size) if args.foreground_center_crop else NoOp(),
+        transforms.RandomCrop(args.crop_size, args.crop_size) if args.random_crop else NoOp(),
         transforms.Normalize(),
         ToTensor(),
     ])
 
     val_transform = Compose([
         transforms.Resize(args.img_size, args.img_size),
+        ForegroundCenterCrop(args.crop_size),
         transforms.Normalize(),
         ToTensor(),
     ])
 
-    stage_1_train_dir = resize('stage_1_train', 256 if args.img_size <= 256 else args.img_size)
+    stage_1_train_dir = resize('stage_1_train', 256 if args.img_size <= 256 else 512)
     print(stage_1_train_dir)
     df = pd.read_csv('inputs/stage_1_train.csv')
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])

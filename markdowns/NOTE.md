@@ -38,6 +38,40 @@
 | 092611 | o |         | o     | o     | o      | o        | 0.0862   | -    | -        |
 | 092805 | o |         | o     | o     |        |          | 0.0853   | 0.0731 | 0.084 | -        |
 
+## Architecture
+- WeightedBCEWithLogitsLoss
+- RAdam
+- 5epochs
+- Cosine Annealing (1e-3 -> 1e-5)
+- hflip (p=0.5)
+- shift (limit=0.0625, p=0.5)
+- scale (limit=0.1, p=0.5)
+- img_size: 256
+
+| model_name             | val loss | PublicLB |
+|:----------------------:|:--------:|:--------:|
+| efficientnet-b0_100407 | 0.0783   | 0.080    |
+| efficientnet-b1_100509 | 0.0772   | 0.081    |
+| efficientnet-b2_100701 | 0.0776   | 0.078    |
+| efficientnet-b3_100712 | 0.0766   | 0.078    |
+
+## Crop
+- WeightedBCEWithLogitsLoss
+- RAdam
+- 5epochs
+- Cosine Annealing (1e-3 -> 1e-5)
+- hflip (p=0.5)
+- shift (limit=0.0625, p=0.5)
+- scale (limit=0.1, p=0.5)
+
+| model_name             | crop      | img_size | crop_size | val loss | PublicLB |
+|:----------------------:|:---------:|:--------:|:---------:|:--------:|:--------:|
+| efficientnet-b0_100822 | center    | 288      | 256       | 0.0799   | 0.080    |
+| efficientnet-b0_100910 | center    | 320      | 256       | 0.0772   | 0.079    |
+| efficientnet-b0_100923 | fg center | 320      | 256       | 0.0779   | 0.081    |
+| efficientnet-b0_101022 | random    | 320      | 256       | 0.0783   | **0.078**|
+| efficientnet-b0_101106 | random    | 352      | 256       | 0.0782   | 0.078    |
+
 ## Other models
 ### se_resnext50_32x4d_092623
 - freeze_bn
