@@ -20,17 +20,13 @@ class Dataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         img_path, label = self.img_paths[index], self.labels[index]
 
-        try:
-            img = cv2.imread(img_path)
-        except:
+        img = cv2.imread(img_path)
+        if img is None:
+            print('%s does not exist' %img_path)
             img = np.zeros((512, 512, 3), 'uint8')
 
         if self.transform is not None:
-            try:
-                img = self.transform(image=img)['image']
-            except:
-                img = np.zeros((512, 512, 3), 'uint8')
-                img = self.transform(image=img)['image']
+            img = self.transform(image=img)['image']
 
         return img, label
 

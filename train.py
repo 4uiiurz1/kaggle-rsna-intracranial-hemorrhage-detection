@@ -16,7 +16,7 @@ import joblib
 import cv2
 from imblearn.under_sampling import RandomUnderSampler
 
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from skimage.io import imread
 
 import torch
@@ -103,6 +103,7 @@ def parse_args():
     parser.add_argument('--random_erase', default=False, type=str2bool)
 
     # dataset
+    parser.add_argument('--img_type', default='')
     parser.add_argument('--cv', default=False, type=str2bool)
     parser.add_argument('--n_splits', default=5, type=int)
 
@@ -268,11 +269,52 @@ def main():
         ToTensor(),
     ])
 
-    stage_1_train_dir = resize('stage_1_train', 256 if args.img_size <= 256 else 512)
-    print(stage_1_train_dir)
+    if args.img_type:
+        stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
+    else:
+        stage_1_train_dir = 'processed/stage_1_train'
+
     df = pd.read_csv('inputs/stage_1_train.csv')
     img_paths = np.array([stage_1_train_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in df['ID']][::6])
     labels = np.array([df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')
+
+    df = df[::6]
+    df['img_path'] = img_paths
+    for c in range(6):
+        df['label_%d' %c] = labels[:, c]
+    df['ID'] = df['ID'].apply(lambda s: '_'.join(s.split('_')[:-1]))
+
+    meta_df = pd.read_csv('processed/stage_1_train_meta.csv')
+    meta_df['ID'] = meta_df['SOPInstanceUID']
+    test_meta_df = pd.read_csv('processed/stage_1_test_meta.csv')
+    df = pd.merge(df, meta_df, how='left')
+
+    patient_ids = meta_df['PatientID'].unique()
+    test_patiend_ids = test_meta_df['PatientID'].unique()
+    patient_ids = np.array([s for s in patient_ids if not s in test_patiend_ids])
+
+    img_path_sets = []
+    label_sets = []
+    kf = KFold(n_splits=args.n_splits, shuffle=True, random_state=41)
+    for fold, (train_idx, val_idx) in enumerate(kf.split(patient_ids)):
+        train_patient_ids = patient_ids[train_idx]
+        val_patient_ids = patient_ids[val_idx]
+        train_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[train_patient_ids].to_list()).astype('str')
+        val_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[val_patient_ids].to_list()).astype('str')
+        train_labels = []
+        for c in range(6):
+            train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[train_patient_ids].to_list()))
+        train_labels = np.array(train_labels).T
+        val_labels = []
+        for c in range(6):
+            val_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[val_patient_ids].to_list()))
+        val_labels = np.array(val_labels).T
+
+        img_path_sets.append((train_img_paths, val_img_paths))
+        label_sets.append((train_labels, val_labels))
+
+        if not args.cv:
+            break
 
     if args.resume:
         checkpoint = torch.load('models/%s/checkpoint.pth.tar' % args.name)
@@ -282,7 +324,7 @@ def main():
     # best_scores = []
 
     skf = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=41)
-    for fold, (train_idx, val_idx) in enumerate(skf.split(img_paths, np.sum([2**c * labels[:, c] for c in range(labels.shape[1])], axis=0))):
+    for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
         print('Fold [%d/%d]' %(fold+1, args.n_splits))
 
         if args.resume and fold < checkpoint['fold'] - 1:
@@ -293,9 +335,6 @@ def main():
             best_losses.append(best_loss)
             # best_scores.append(best_score)
             continue
-
-        train_img_paths, val_img_paths = img_paths[train_idx], img_paths[val_idx]
-        train_labels, val_labels = labels[train_idx], labels[val_idx]
 
         # train
         train_set = Dataset(
