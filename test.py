@@ -95,8 +95,11 @@ def main():
     ])
 
     # data loading code
-    stage_1_test_dir = resize('stage_1_test', 256 if args.img_size <= 256 else 512)
-    print(stage_1_test_dir)
+    if args.img_type:
+        stage_1_test_dir = 'processed/stage_1_test_%s' %args.img_type
+    else:
+        stage_1_test_dir = 'processed/stage_1_test'
+
     test_df = pd.read_csv('inputs/stage_1_sample_submission.csv')
     test_img_paths = np.array([stage_1_test_dir + '/' + '_'.join(s.split('_')[:-1]) + '.png' for s in test_df['ID']][::6])
     test_labels = np.array([test_df.loc[c::6, 'Label'].values for c in range(6)]).T.astype('float32')

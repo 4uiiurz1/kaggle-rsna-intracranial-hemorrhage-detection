@@ -323,7 +323,6 @@ def main():
     best_losses = []
     # best_scores = []
 
-    skf = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=41)
     for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
         print('Fold [%d/%d]' %(fold+1, args.n_splits))
 

@@ -9,7 +9,7 @@ from joblib import Parallel, delayed
 
 
 def concat_3n_images(dataset):
-    def process(df_, study_id, indices, output_dir):
+    def process(df_, study_id, indices, output_dir, k=3):
         df = df_[indices == study_id].sort_values('Axial').reset_index(drop=True)
         img1 = None
         img2 = None
