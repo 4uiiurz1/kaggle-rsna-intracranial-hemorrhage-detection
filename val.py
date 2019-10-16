@@ -28,6 +28,10 @@ import torch.backends.cudnn as cudnn
 import torchvision
 from torchvision import datasets, models, transforms
 
+import cv2
+cv2.setNumThreads(0)
+cv2.ocl.setUseOpenCL(False)
+
 from albumentations.augmentations import transforms
 from albumentations.core.composition import Compose
 from albumentations.pytorch.transforms import ToTensor

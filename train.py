@@ -103,7 +103,7 @@ def parse_args():
     parser.add_argument('--random_erase', default=False, type=str2bool)
 
     # dataset
-    parser.add_argument('--img_type', default='')
+    parser.add_argument('--img_type', default='concat_k3')
     parser.add_argument('--cv', default=False, type=str2bool)
     parser.add_argument('--n_splits', default=5, type=int)
 
@@ -326,7 +326,7 @@ def main():
     for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
         print('Fold [%d/%d]' %(fold+1, args.n_splits))
 
-        if args.resume and fold < checkpoint['fold'] - 1:
+        if (args.resume and fold < checkpoint['fold'] - 1) or (not args.resume and os.path.exists('models/%s/model_%d.pth' % (args.name, fold+1))):
             log = pd.read_csv('models/%s/log_%d.csv' %(args.name, fold+1))
             best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss'].values
             # best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values

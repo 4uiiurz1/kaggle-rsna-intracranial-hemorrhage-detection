@@ -20,6 +20,7 @@ def parse_args():
 
     parser.add_argument('--name', default=None)
     parser.add_argument('--k', default=5, type=int)
+    parser.add_argument('--sigma', default=0.8, type=int)
 
     args = parser.parse_args()
 
@@ -46,13 +47,19 @@ def main():
 
     study_ids = test_meta_df['StudyInstanceUID'].unique()
 
+    w = np.exp(-(np.arange(-test_args.k // 2 + 1, test_args.k // 2 + 1))**2/(2*test_args.sigma**2))
+    w /= np.sum(w)
+    print(w)
+
     for study_id in tqdm(study_ids, total=len(study_ids)):
         df_ = test_meta_df[test_meta_df['StudyInstanceUID'] == study_id].sort_values('Axial')
         labels_ = np.vstack([labels[ids==s] for s in df_['SOPInstanceUID']])
         # plt.imshow(labels_, vmin=0, vmax=1)
         # plt.show()
         for idx, s in enumerate(df_['SOPInstanceUID']):
-            new_labels[ids == s] = labels_[max(0, idx - test_args.k // 2):min(len(labels_), idx + test_args.k // 2 + 1)].mean(axis=0)
+            x = labels_[max(0, idx - test_args.k // 2):min(len(labels_), idx + test_args.k // 2 + 1)]
+            x = np.pad(x, ((np.abs(min(0, idx - test_args.k // 2)), max(len(labels_) - 1, idx + test_args.k // 2) - len(labels_) + 1), (0, 0)), mode='edge')
+            new_labels[ids == s] = np.average(x, axis=0, weights=w)
         # plt.imshow(np.vstack([new_labels[ids==s] for s in df_['SOPInstanceUID']]), vmin=0, vmax=1)
         # plt.show()
 
@@ -68,7 +75,7 @@ def main():
     test_df['ID'] = test_df.ID + '_' + test_df.variable
     test_df['Label'] = test_df['value']
 
-    test_df[['ID', 'Label']].to_csv('submissions/%s_sma_k%d.csv' %(test_args.name, test_args.k), index=False)
+    test_df[['ID', 'Label']].to_csv('submissions/%s_gma_k%d_s%.1f.csv' %(test_args.name, test_args.k, test_args.sigma), index=False)
 
 
 if __name__ == '__main__':
