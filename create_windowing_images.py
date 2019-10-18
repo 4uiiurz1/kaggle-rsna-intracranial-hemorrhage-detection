@@ -50,7 +50,7 @@ def main():
     widths= [80, 200, 380]
 
     convert_dcm_to_png('stage_1_train', centers, widths)
-    # convert_dcm_to_png('stage_1_test')
+    convert_dcm_to_png('stage_1_test', centers, widths)
 
 
 if __name__ == '__main__':

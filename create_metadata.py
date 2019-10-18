@@ -37,7 +37,7 @@ def convert_dcm_to_df(dataset):
 
 def main():
     convert_dcm_to_df('stage_1_train')
-    # convert_dcm_to_df('stage_1_test')
+    convert_dcm_to_df('stage_1_test')
 
 
 if __name__ == '__main__':

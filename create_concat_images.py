@@ -73,7 +73,7 @@ def concat_3n_images(dataset):
 
 
 def main():
-    # concat_3n_images('stage_1_train')
+    concat_3n_images('stage_1_train')
     concat_3n_images('stage_1_test')
 
 

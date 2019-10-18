@@ -14,10 +14,13 @@ from tqdm import tqdm
 import pandas as pd
 import joblib
 import cv2
+# cv2.setNumThreads(0)
 from imblearn.under_sampling import RandomUnderSampler
 
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from skimage.io import imread
+
+from apex import amp
 
 import torch
 import torch.nn as nn
@@ -52,7 +55,7 @@ def parse_args():
                         help='model name: (default: arch+timestamp)')
     parser.add_argument('--arch', '-a', metavar='ARCH', default='efficientnet-b0',
                         help='model architecture: ' +
-                        ' (default: resnet34)')
+                        ' (default: efficientnet-b0)')
     parser.add_argument('--freeze_bn', default=False, type=str2bool)
     parser.add_argument('--dropout_p', default=0, type=float)
     parser.add_argument('--pooling', default='avg')
@@ -70,7 +73,7 @@ def parse_args():
     parser.add_argument('--crop_size', default=256, type=int)
     parser.add_argument('--optimizer', default='RAdam')
     parser.add_argument('--scheduler', default='CosineAnnealingLR',
-                        choices=['CosineAnnealingLR', 'ReduceLROnPlateau'])
+                        choices=['CosineAnnealingLR', 'ReduceLROnPlateau', 'MultiStepLR'])
     parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                         metavar='LR', help='initial learning rate')
     parser.add_argument('--min_lr', default=1e-5, type=float,
@@ -109,6 +112,7 @@ def parse_args():
 
     parser.add_argument('--num_workers', default=6, type=int)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--apex', action='store_true')
 
     args = parser.parse_args()
 
@@ -135,7 +139,11 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
 
         # compute gradient and do optimizing step
         optimizer.zero_grad()
-        loss.backward()
+        if args.apex:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
         optimizer.step()
 
         # if args.pred_type == 'all':
@@ -382,6 +390,9 @@ def main():
         elif args.optimizer == 'SGD':
             optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
                                   momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
+
+        if args.apex:
+            amp.initialize(model, optimizer, opt_level='O1')
 
         if args.scheduler == 'CosineAnnealingLR':
             scheduler = lr_scheduler.CosineAnnealingLR(
