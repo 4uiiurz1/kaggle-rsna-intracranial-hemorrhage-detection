@@ -109,43 +109,34 @@ def main():
         shuffle=False,
         num_workers=args.num_workers)
 
+    # create model
+    model_path = 'models/%s/model.pth' % args.name
+    model = get_model(model_name=args.arch,
+                      num_outputs=num_outputs,
+                      freeze_bn=args.freeze_bn,
+                      dropout_p=args.dropout_p,
+                      pooling=args.pooling,
+                      lp_p=args.lp_p)
+    model = model.cuda()
+    model.load_state_dict(torch.load(model_path))
+
+    model.eval()
+
     preds = []
-    for fold in range(args.n_splits):
-        print('Fold [%d/%d]' %(fold+1, args.n_splits))
-
-        # create model
-        model_path = 'models/%s/model_%d.pth' % (args.name, fold+1)
-        if not os.path.exists(model_path):
-            print('%s is not exists.' %model_path)
-            continue
-        model = get_model(model_name=args.arch,
-                          num_outputs=num_outputs,
-                          freeze_bn=args.freeze_bn,
-                          dropout_p=args.dropout_p,
-                          pooling=args.pooling,
-                          lp_p=args.lp_p)
-        model = model.cuda()
-        model.load_state_dict(torch.load(model_path))
-
-        model.eval()
-
-        preds_fold = []
-        with torch.no_grad():
-            for i, (input, _) in tqdm(enumerate(test_loader), total=len(test_loader)):
-                outputs = []
-                for input in apply_tta(args, input):
-                    input = input.cuda()
-                    output = model(input)
-                    output = torch.sigmoid(output)
-                    if args.pred_type == 'except_any':
-                        output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
-                    outputs.append(output.data.cpu().numpy())
-                preds_fold.extend(np.mean(outputs, axis=0))
-        preds_fold = np.vstack(preds_fold)
-        preds.append(preds_fold)
-
-        if not args.cv:
-            break
+    preds_fold = []
+    with torch.no_grad():
+        for i, (input, _) in tqdm(enumerate(test_loader), total=len(test_loader)):
+            outputs = []
+            for input in apply_tta(args, input):
+                input = input.cuda()
+                output = model(input)
+                output = torch.sigmoid(output)
+                if args.pred_type == 'except_any':
+                    output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
+                outputs.append(output.data.cpu().numpy())
+            preds_fold.extend(np.mean(outputs, axis=0))
+    preds_fold = np.vstack(preds_fold)
+    preds.append(preds_fold)
 
     preds = np.mean(preds, axis=0)
 

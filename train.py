@@ -80,6 +80,8 @@ def parse_args():
                         help='minimum learning rate')
     parser.add_argument('--factor', default=0.1, type=float)
     parser.add_argument('--patience', default=2, type=int)
+    parser.add_argument('--milestones', default='1,2', type=str)
+    parser.add_argument('--gamma', default=2/3, type=float)
     parser.add_argument('--momentum', default=0.9, type=float,
                         help='momentum')
     parser.add_argument('--weight_decay', default=0, type=float,
@@ -278,7 +280,8 @@ def main():
     ])
 
     if args.img_type:
-        stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
+        # stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
+        stage_1_train_dir = 'e:/stage_1_train_%s' %args.img_type
     else:
         stage_1_train_dir = 'processed/stage_1_train'
 
@@ -336,7 +339,7 @@ def main():
 
         if (args.resume and fold < checkpoint['fold'] - 1) or (not args.resume and os.path.exists('models/%s/model_%d.pth' % (args.name, fold+1))):
             log = pd.read_csv('models/%s/log_%d.csv' %(args.name, fold+1))
-            best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss'].values
+            best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss']
             # best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
             folds.append(str(fold + 1))
             best_losses.append(best_loss)
@@ -390,6 +393,8 @@ def main():
         elif args.optimizer == 'SGD':
             optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
                                   momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
+        else:
+            raise NotImplementedError
 
         if args.apex:
             amp.initialize(model, optimizer, opt_level='O1')
@@ -400,6 +405,11 @@ def main():
         elif args.scheduler == 'ReduceLROnPlateau':
             scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, factor=args.factor, patience=args.patience,
                                                        verbose=1, min_lr=args.min_lr)
+        elif args.scheduler == 'MultiStepLR':
+            scheduler = lr_scheduler.MultiStepLR(optimizer,
+                milestones=[int(e) for e in args.milestones.split(',')], gamma=args.gamma)
+        else:
+            raise NotImplementedError
 
         log = {
             'epoch': [],

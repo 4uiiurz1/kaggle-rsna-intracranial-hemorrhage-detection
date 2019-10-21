@@ -30,7 +30,7 @@ def parse_args():
 def main():
     test_args = parse_args()
 
-    args = joblib.load('models/%s/args.pkl' %test_args.name)
+    args = joblib.load('models/%s/args.pkl' %'_'.join(test_args.name.split('_')[:2]))
 
     print('Config -----')
     for arg in vars(args):
