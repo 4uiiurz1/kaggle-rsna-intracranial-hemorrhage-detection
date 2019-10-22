@@ -66,8 +66,6 @@ def parse_args():
                         help='number of total epochs to run')
     parser.add_argument('-b', '--batch_size', default=32, type=int,
                         metavar='N', help='mini-batch size (default: 32)')
-    parser.add_argument('--accum_steps', default=1, type=int,
-                        help='accumlation steps')
     parser.add_argument('--img_size', default=512, type=int,
                         help='input image size (default: 320)')
     parser.add_argument('--crop_size', default=410, type=int)
@@ -127,7 +125,7 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
 
     model.train()
 
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader) // args.accum_steps)
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader))
     for i, (input, target) in pbar:
 
         input = input.cuda()
@@ -139,24 +137,18 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
         elif args.pred_type == 'except_any':
             loss = criterion(output, target[:, :-1])
 
-        loss /= args.accum_steps
-
+        # compute gradient and do optimizing step
+        optimizer.zero_grad()
         if args.apex:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
             loss.backward()
+        optimizer.step()
 
-        if (i + 1) % args.accum_steps == 0:
-            # compute gradient and do optimizing step
-            optimizer.zero_grad()
-            optimizer.step()
-            model.zero_grad()
+        losses.update(loss.item(), input.size(0))
 
-            losses.update(loss.item() * args.accum_steps, input.size(0))
-
-            pbar.set_description('loss %.4f' %losses.avg)
-            pbar.update(1)
+        pbar.set_description('loss %.4f' %losses.avg)
 
     return losses.avg
 
