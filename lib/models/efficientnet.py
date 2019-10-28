@@ -11,6 +11,8 @@ def lp_pool2d(input, p):
 class EfficientNet(efficientnet_pytorch.EfficientNet):
     def __init__(self, blocks_args=None, global_params=None, pooling='avg', lp_p=3):
         super().__init__(blocks_args, global_params)
+        self.mean = [0.485, 0.456, 0.406]
+        self.std = [0.229, 0.224, 0.225]
         self.pooling = pooling
         self.lp_p = lp_p
 

@@ -79,12 +79,25 @@ def main():
     else:
         raise NotImplementedError
 
+    # create model
+    model_path = 'models/%s/model.pth' % args.name
+    model = get_model(model_name=args.arch,
+                      num_outputs=num_outputs,
+                      freeze_bn=args.freeze_bn,
+                      dropout_p=args.dropout_p,
+                      pooling=args.pooling,
+                      lp_p=args.lp_p)
+    model = model.cuda()
+    model.load_state_dict(torch.load(model_path))
+
+    model.eval()
+
     cudnn.benchmark = True
 
     test_transform = Compose([
         transforms.Resize(args.img_size, args.img_size),
         ForegroundCenterCrop(args.crop_size),
-        transforms.Normalize(),
+        transforms.Normalize(mean=model.mean, std=model.std),
         ToTensor(),
     ])
 
@@ -108,19 +121,6 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers)
-
-    # create model
-    model_path = 'models/%s/model.pth' % args.name
-    model = get_model(model_name=args.arch,
-                      num_outputs=num_outputs,
-                      freeze_bn=args.freeze_bn,
-                      dropout_p=args.dropout_p,
-                      pooling=args.pooling,
-                      lp_p=args.lp_p)
-    model = model.cuda()
-    model.load_state_dict(torch.load(model_path))
-
-    model.eval()
 
     preds = []
     preds_fold = []

@@ -19,8 +19,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--name', default=None)
-    parser.add_argument('--k', default=5, type=int)
-    parser.add_argument('--sigma', default=0.8, type=int)
+    parser.add_argument('--k', default='19,11,9,17,19,13')
+    parser.add_argument('--sigma', default='2.90,0.60,0.55,1.10,1.50,0.70')
 
     args = parser.parse_args()
 
@@ -29,13 +29,6 @@ def parse_args():
 
 def main():
     test_args = parse_args()
-
-    args = joblib.load('models/%s/args.pkl' %'_'.join(test_args.name.split('_')[:2]))
-
-    print('Config -----')
-    for arg in vars(args):
-        print('%s: %s' % (arg, getattr(args, arg)))
-    print('------------')
 
     test_meta_df = pd.read_csv('processed/stage_1_test_meta.csv')
     test_meta_df['Axial'] = test_meta_df['ImagePositionPatient'].apply(lambda s: float(s.split('\'')[-2]))
@@ -47,9 +40,14 @@ def main():
 
     study_ids = test_meta_df['StudyInstanceUID'].unique()
 
-    w = np.exp(-(np.arange(-test_args.k // 2 + 1, test_args.k // 2 + 1))**2/(2*test_args.sigma**2))
-    w /= np.sum(w)
-    print(w)
+    ks = [int(e) for e in test_args.k.split(',')]
+    sigmas = [float(e) for e in test_args.sigma.split(',')]
+    ws = []
+    for k, s in zip(ks, sigmas):
+        w = np.exp(-(np.arange(-k // 2 + 1, k // 2 + 1))**2 / (2 * s**2))
+        w /= np.sum(w)
+        print(w)
+        ws.append(w)
 
     for study_id in tqdm(study_ids, total=len(study_ids)):
         df_ = test_meta_df[test_meta_df['StudyInstanceUID'] == study_id].sort_values('Axial')
@@ -57,9 +55,10 @@ def main():
         # plt.imshow(labels_, vmin=0, vmax=1)
         # plt.show()
         for idx, s in enumerate(df_['SOPInstanceUID']):
-            x = labels_[max(0, idx - test_args.k // 2):min(len(labels_), idx + test_args.k // 2 + 1)]
-            x = np.pad(x, ((np.abs(min(0, idx - test_args.k // 2)), max(len(labels_) - 1, idx + test_args.k // 2) - len(labels_) + 1), (0, 0)), mode='edge')
-            new_labels[ids == s] = np.average(x, axis=0, weights=w)
+            for c, k in enumerate(ks):
+                x = labels_[max(0, idx - k // 2):min(len(labels_), idx + k // 2 + 1), c]
+                x = np.pad(x, ((np.abs(min(0, idx - k // 2)), max(len(labels_) - 1, idx + k // 2) - len(labels_) + 1)), mode='edge')
+                new_labels[ids == s, c] = np.average(x, weights=ws[c])
         # plt.imshow(np.vstack([new_labels[ids==s] for s in df_['SOPInstanceUID']]), vmin=0, vmax=1)
         # plt.show()
 
@@ -75,7 +74,9 @@ def main():
     test_df['ID'] = test_df.ID + '_' + test_df.variable
     test_df['Label'] = test_df['value']
 
-    test_df[['ID', 'Label']].to_csv('submissions/%s_gma_k%d_s%.1f.csv' %(test_args.name, test_args.k, test_args.sigma), index=False)
+    test_df[['ID', 'Label']].to_csv(
+        'submissions/%s_gma_%s.csv' %(test_args.name,
+        '_'.join(['k%ds%.2f' %(k, s) for k, s in zip(ks, sigmas)])), index=False)
 
 
 if __name__ == '__main__':
