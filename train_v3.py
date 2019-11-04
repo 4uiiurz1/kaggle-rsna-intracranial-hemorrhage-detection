@@ -38,7 +38,7 @@ from albumentations.core.composition import Compose
 from albumentations.pytorch.transforms import ToTensor
 from albumentations.core.transforms_interface import NoOp
 
-from lib.dataset import Dataset
+from lib.dataset import DatasetV2
 from lib.models.model_factory import get_model
 from lib.utils import *
 from lib.metrics import *
@@ -48,11 +48,47 @@ from lib.preprocess import resize
 from lib.augmentations import *
 
 
+class HeadCNN(nn.Module):
+    def __init__(self, model, batch_size=1):
+        super().__init__()
+        self.model = model
+        # for p in self.model.parameters():
+        #     p.requires_grad = False
+        print(self.model)
+        self.model._fc = nn.Sequential(*[
+            nn.Linear(1408, 512, bias=False),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+        ])
+
+        self.conv = nn.Sequential(*[
+            nn.Conv2d(512, 6, (5, 1), padding=(2, 0)),
+        ])
+
+        self.batch_size = 1
+
+    def forward(self, inputs):
+        # Convolution layers
+        x = self.model(inputs) # b, c
+
+        b, c = x.size()
+        x = x.view(self.batch_size, -1, c, 1) # b, w, c, 1
+        x = x.permute(0, 2, 1, 3) # b, c, w, 1
+
+        x = self.conv(x)
+
+        x = x.permute(0, 2, 1, 3) # b, w, c, 1
+        x = x.view(b, 6)
+
+        return x
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--name', default=None,
                         help='model name: (default: arch+timestamp)')
+    parser.add_argument('--base_name', default=None)
     parser.add_argument('--arch', '-a', metavar='ARCH', default='efficientnet-b0',
                         help='model architecture: ' +
                         ' (default: efficientnet-b0)')
@@ -64,10 +100,11 @@ def parse_args():
     parser.add_argument('--label_smooth', default=0, type=float)
     parser.add_argument('--epochs', default=5, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('-b', '--batch_size', default=32, type=int,
-                        metavar='N', help='mini-batch size (default: 32)')
+    parser.add_argument('-b', '--batch_size', default=4, type=int,
+                        metavar='N', help='mini-batch size (default: 4)')
     parser.add_argument('--accum_steps', default=1, type=int,
                         help='accumlation steps')
+    parser.add_argument('--depth_size', default=8, type=int)
     parser.add_argument('--img_size', default=512, type=int,
                         help='input image size (default: 320)')
     parser.add_argument('--crop_size', default=410, type=int)
@@ -129,6 +166,8 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
 
     pbar = tqdm(total=len(train_loader) // args.accum_steps)
     for i, (input, target) in enumerate(train_loader):
+        input = input.view(32, 3, args.crop_size, args.crop_size)
+        target = target.view(32, 6)
 
         input = input.cuda()
         target = target.cuda()
@@ -211,15 +250,6 @@ def main():
 
     cudnn.benchmark = True
 
-    # create model
-    model = get_model(model_name=args.arch,
-                      num_outputs=num_outputs,
-                      freeze_bn=args.freeze_bn,
-                      dropout_p=args.dropout_p,
-                      pooling=args.pooling,
-                      lp_p=args.lp_p)
-    model = model.cuda()
-
     train_transform = Compose([
         transforms.Resize(args.img_size, args.img_size),
         transforms.HorizontalFlip() if args.hflip else NoOp(),
@@ -240,13 +270,12 @@ def main():
         transforms.CenterCrop(args.crop_size, args.crop_size) if args.center_crop else NoOp(),
         ForegroundCenterCrop(args.crop_size) if args.foreground_center_crop else NoOp(),
         transforms.RandomCrop(args.crop_size, args.crop_size) if args.random_crop else NoOp(),
-        transforms.Normalize(mean=model.mean, std=model.std),
+        transforms.Normalize(),
         ToTensor(),
     ])
 
     if args.img_type:
-        # stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
-        stage_1_train_dir = 'e:/stage_1_train_%s' %args.img_type
+        stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
     else:
         stage_1_train_dir = 'processed/stage_1_train'
 
@@ -264,25 +293,20 @@ def main():
     meta_df['ID'] = meta_df['SOPInstanceUID']
     test_meta_df = pd.read_csv('processed/stage_1_test_meta.csv')
     df = pd.merge(df, meta_df, how='left')
+    df['Axial'] = df['ImagePositionPatient'].apply(lambda s: float(s.split('\'')[-2]))
 
     patient_ids = meta_df['PatientID'].unique()
     test_patient_ids = test_meta_df['PatientID'].unique()
     if args.remove_test_patient_ids:
         patient_ids = np.array([s for s in patient_ids if not s in test_patient_ids])
 
-    train_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[patient_ids].to_list()).astype('str')
-    train_labels = []
-    for c in range(6):
-        train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[patient_ids].to_list()))
-    train_labels = np.array(train_labels).T
-
     if args.resume:
         checkpoint = torch.load('models/%s/checkpoint.pth.tar' % args.name)
 
     # train
-    train_set = Dataset(
-        train_img_paths,
-        train_labels,
+    train_set = DatasetV2(
+        df,
+        depth_size=args.depth_size,
         transform=train_transform)
     train_loader = torch.utils.data.DataLoader(
         train_set,
@@ -290,7 +314,21 @@ def main():
         shuffle=True,
         num_workers=args.num_workers,
         # pin_memory=True,
+        drop_last=True,
     )
+
+    # create model
+    model = get_model(model_name=args.arch,
+                      num_outputs=num_outputs,
+                      freeze_bn=args.freeze_bn,
+                      dropout_p=args.dropout_p,
+                      pooling=args.pooling,
+                      lp_p=args.lp_p)
+    if args.base_name is not None:
+        model.load_state_dict(torch.load(os.path.join('models', args.base_name, 'model.pth')))
+    model = HeadCNN(model, batch_size=args.batch_size)
+    model = model.cuda()
+    # print(model)
 
     if args.optimizer == 'Adam':
         optimizer = optim.Adam(

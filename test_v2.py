@@ -103,8 +103,7 @@ def main():
 
     # data loading code
     if args.img_type:
-        # stage_1_test_dir = 'processed/stage_1_test_%s' %args.img_type
-        stage_1_test_dir = 'e:/stage_1_test_%s' %args.img_type
+        stage_1_test_dir = 'processed/stage_1_test_%s' %args.img_type
     else:
         stage_1_test_dir = 'processed/stage_1_test'
 

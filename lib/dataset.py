@@ -36,7 +36,7 @@ class Dataset(torch.utils.data.Dataset):
         return len(self.img_paths)
 
 
-class InstanceDataset(torch.utils.data.Dataset):
+class DatasetV2(torch.utils.data.Dataset):
     def __init__(self, df, depth_size, transform=None):
         if not os.path.exists('processed/instances.pkl'):
             self.img_paths = []
@@ -56,7 +56,10 @@ class InstanceDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         img_paths, labels = self.img_paths[index], self.labels[index]
-        idx = random.randrange(len(img_paths) - self.depth_size)
+        try:
+            idx = random.randrange(len(img_paths) - self.depth_size)
+        except:
+            idx = 0
         img_paths = img_paths[idx:idx + self.depth_size]
         labels = labels[idx:idx + self.depth_size]
 
