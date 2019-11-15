@@ -31,6 +31,8 @@ def convert_dcm_to_png(dataset, centers, widths):
 
     if dataset == 'stage_1_test':
         df = pd.read_csv('inputs/stage_1_sample_submission.csv')
+    elif dataset == 'stage_2_test':
+        df = pd.read_csv('inputs/stage_2_sample_submission.csv')
     else:
         df = pd.read_csv('inputs/%s.csv' %dataset)
     img_paths = np.array([os.path.join('inputs/%s_images/' %dataset, '_'.join(s.split('_')[:-1]) + '.dcm') for s in df['ID']][::6])
@@ -49,8 +51,9 @@ def main():
     centers = [40, 80, 40]
     widths= [80, 200, 380]
 
-    convert_dcm_to_png('stage_1_train', centers, widths)
-    convert_dcm_to_png('stage_1_test', centers, widths)
+    # convert_dcm_to_png('stage_1_train', centers, widths)
+    # convert_dcm_to_png('stage_1_test', centers, widths)
+    convert_dcm_to_png('stage_2_test', centers, widths)
 
 
 if __name__ == '__main__':

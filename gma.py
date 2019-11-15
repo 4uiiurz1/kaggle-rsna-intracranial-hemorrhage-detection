@@ -31,6 +31,7 @@ def main():
     test_args = parse_args()
 
     test_meta_df = pd.read_csv('processed/stage_1_test_meta.csv')
+    # test_meta_df = pd.read_csv('processed/stage_2_test_meta.csv')
     test_meta_df['Axial'] = test_meta_df['ImagePositionPatient'].apply(lambda s: float(s.split('\'')[-2]))
 
     test_df = pd.read_csv('submissions/%s.csv' %test_args.name)

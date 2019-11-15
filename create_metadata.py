@@ -22,6 +22,8 @@ def convert_dcm_to_df(dataset):
 
     if dataset == 'stage_1_test':
         df = pd.read_csv('inputs/stage_1_sample_submission.csv')
+    elif dataset == 'stage_2_test':
+        df = pd.read_csv('inputs/stage_2_sample_submission.csv')
     else:
         df = pd.read_csv('inputs/%s.csv' %dataset)
     img_paths = np.array([os.path.join('inputs/%s_images/' %dataset, '_'.join(s.split('_')[:-1]) + '.dcm') for s in df['ID']][::6])
@@ -36,8 +38,9 @@ def convert_dcm_to_df(dataset):
 
 
 def main():
-    convert_dcm_to_df('stage_1_train')
-    convert_dcm_to_df('stage_1_test')
+    # convert_dcm_to_df('stage_1_train')
+    # convert_dcm_to_df('stage_1_test')
+    convert_dcm_to_df('stage_2_test')
 
 
 if __name__ == '__main__':

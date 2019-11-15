@@ -64,16 +64,16 @@ def parse_args():
     parser.add_argument('--label_smooth', default=0, type=float)
     parser.add_argument('--epochs', default=5, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('--train_steps', default=None, type=int)
-    parser.add_argument('--val_steps', default=None, type=int)
     parser.add_argument('-b', '--batch_size', default=32, type=int,
                         metavar='N', help='mini-batch size (default: 32)')
-    parser.add_argument('--img_size', default=320, type=int,
+    parser.add_argument('--accum_steps', default=1, type=int,
+                        help='accumlation steps')
+    parser.add_argument('--img_size', default=512, type=int,
                         help='input image size (default: 320)')
-    parser.add_argument('--crop_size', default=256, type=int)
+    parser.add_argument('--crop_size', default=410, type=int)
     parser.add_argument('--optimizer', default='RAdam')
     parser.add_argument('--scheduler', default='CosineAnnealingLR',
-                        choices=['CosineAnnealingLR', 'ReduceLROnPlateau', 'MultiStepLR'])
+                        choices=['CosineAnnealingLR', 'MultiStepLR'])
     parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                         metavar='LR', help='initial learning rate')
     parser.add_argument('--min_lr', default=1e-5, type=float,
@@ -108,13 +108,14 @@ def parse_args():
     parser.add_argument('--random_erase', default=False, type=str2bool)
 
     # dataset
-    parser.add_argument('--img_type', default='concat_k3')
-    parser.add_argument('--cv', default=False, type=str2bool)
-    parser.add_argument('--n_splits', default=5, type=int)
+    parser.add_argument('--img_type', default='c40w80_c80w200_c40w380')
+    parser.add_argument('--remove_test_patient_ids', default=False, type=str2bool)
 
     parser.add_argument('--num_workers', default=6, type=int)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--apex', action='store_true')
+
+    parser.add_argument('--seed', type=int)
 
     args = parser.parse_args()
 
@@ -123,12 +124,11 @@ def parse_args():
 
 def train(args, train_loader, model, criterion, optimizer, epoch):
     losses = AverageMeter()
-    # scores = AverageMeter()
 
     model.train()
 
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader))
-    for i, (input, target) in pbar:
+    pbar = tqdm(total=len(train_loader) // args.accum_steps)
+    for i, (input, target) in enumerate(train_loader):
 
         input = input.cuda()
         target = target.cuda()
@@ -139,68 +139,25 @@ def train(args, train_loader, model, criterion, optimizer, epoch):
         elif args.pred_type == 'except_any':
             loss = criterion(output, target[:, :-1])
 
-        # compute gradient and do optimizing step
-        optimizer.zero_grad()
+        loss /= args.accum_steps
+
         if args.apex:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
             loss.backward()
-        optimizer.step()
 
-        # if args.pred_type == 'all':
-        #     output = torch.sigmoid(output)
-        #     score = log_loss(output, target)
-        # elif args.pred_type == 'except_any':
-        #     output = torch.sigmoid(output)
-        #     output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
-        #     score = log_loss(output, target)
+        if (i + 1) % args.accum_steps == 0:
+            # compute gradient and do optimizing step
+            optimizer.step()
+            optimizer.zero_grad()
 
-        losses.update(loss.item(), input.size(0))
-        # scores.update(score, input.size(0))
-        pbar.set_description('loss %.4f' %losses.avg)
-        # pbar.set_description('loss %.4f - score %.4f' %(losses.avg, scores.avg))
-        pbar.update(1)
+            losses.update(loss.item() * args.accum_steps, input.size(0))
 
-    return losses.avg
-    # return losses.avg, scores.avg
-
-
-def validate(args, val_loader, model, criterion):
-    losses = AverageMeter()
-    # scores = AverageMeter()
-
-    # switch to evaluate mode
-    model.eval()
-
-    with torch.no_grad():
-        pbar = tqdm(enumerate(val_loader), total=len(val_loader))
-        for i, (input, target) in pbar:
-            input = input.cuda()
-            target = target.cuda()
-
-            output = model(input)
-            if args.pred_type == 'all':
-                loss = criterion(output, target)
-            elif args.pred_type == 'except_any':
-                loss = criterion(output, target[:, :-1])
-
-            # if args.pred_type == 'all':
-            #     output = torch.sigmoid(output)
-            #     score = log_loss(output, target)
-            # elif args.pred_type == 'except_any':
-            #     output = torch.sigmoid(output)
-            #     output = torch.cat([output, torch.max(output, 1, keepdim=True)[0]], 1)
-            #     score = log_loss(output, target)
-
-            losses.update(loss.item(), input.size(0))
-            # scores.update(score, input.size(0))
-            pbar.set_description('val_loss %.4f' %losses.avg)
-            # pbar.set_description('val_loss %.4f - val_score %.4f' %(losses.avg, scores.avg))
+            pbar.set_description('loss %.4f' %losses.avg)
             pbar.update(1)
 
     return losses.avg
-    # return losses.avg, scores.avg
 
 
 def main():
@@ -227,6 +184,12 @@ def main():
 
     joblib.dump(args, 'models/%s/args.pkl' % args.name)
 
+    if args.seed is not None and not args.resume:
+        print('set random seed')
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+
     if args.loss == 'BCEWithLogitsLoss':
         criterion = BCEWithLogitsLoss().cuda()
     elif args.loss == 'WeightedBCEWithLogitsLoss':
@@ -248,6 +211,15 @@ def main():
 
     cudnn.benchmark = True
 
+    # create model
+    model = get_model(model_name=args.arch,
+                      num_outputs=num_outputs,
+                      freeze_bn=args.freeze_bn,
+                      dropout_p=args.dropout_p,
+                      pooling=args.pooling,
+                      lp_p=args.lp_p)
+    model = model.cuda()
+
     train_transform = Compose([
         transforms.Resize(args.img_size, args.img_size),
         transforms.HorizontalFlip() if args.hflip else NoOp(),
@@ -268,20 +240,12 @@ def main():
         transforms.CenterCrop(args.crop_size, args.crop_size) if args.center_crop else NoOp(),
         ForegroundCenterCrop(args.crop_size) if args.foreground_center_crop else NoOp(),
         transforms.RandomCrop(args.crop_size, args.crop_size) if args.random_crop else NoOp(),
-        transforms.Normalize(),
-        ToTensor(),
-    ])
-
-    val_transform = Compose([
-        transforms.Resize(args.img_size, args.img_size),
-        ForegroundCenterCrop(args.crop_size),
-        transforms.Normalize(),
+        transforms.Normalize(mean=model.mean, std=model.std),
         ToTensor(),
     ])
 
     if args.img_type:
-        # stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
-        stage_1_train_dir = 'e:/stage_1_train_%s' %args.img_type
+        stage_1_train_dir = 'processed/stage_1_train_%s' %args.img_type
     else:
         stage_1_train_dir = 'processed/stage_1_train'
 
@@ -301,201 +265,99 @@ def main():
     df = pd.merge(df, meta_df, how='left')
 
     patient_ids = meta_df['PatientID'].unique()
-    test_patiend_ids = test_meta_df['PatientID'].unique()
-    patient_ids = np.array([s for s in patient_ids if not s in test_patiend_ids])
+    test_patient_ids = test_meta_df['PatientID'].unique()
+    if args.remove_test_patient_ids:
+        patient_ids = np.array([s for s in patient_ids if not s in test_patient_ids])
 
-    img_path_sets = []
-    label_sets = []
-    kf = KFold(n_splits=args.n_splits, shuffle=True, random_state=41)
-    for fold, (train_idx, val_idx) in enumerate(kf.split(patient_ids)):
-        train_patient_ids = patient_ids[train_idx]
-        val_patient_ids = patient_ids[val_idx]
-        train_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[train_patient_ids].to_list()).astype('str')
-        val_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[val_patient_ids].to_list()).astype('str')
-        train_labels = []
-        for c in range(6):
-            train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[train_patient_ids].to_list()))
-        train_labels = np.array(train_labels).T
-        val_labels = []
-        for c in range(6):
-            val_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[val_patient_ids].to_list()))
-        val_labels = np.array(val_labels).T
-
-        img_path_sets.append((train_img_paths, val_img_paths))
-        label_sets.append((train_labels, val_labels))
-
-        if not args.cv:
-            break
+    train_img_paths = np.hstack(df[['img_path', 'PatientID']].groupby(['PatientID'])['img_path'].apply(np.array).loc[patient_ids].to_list()).astype('str')
+    train_labels = []
+    for c in range(6):
+        train_labels.append(np.hstack(df[['label_%d' %c, 'PatientID']].groupby(['PatientID'])['label_%d' %c].apply(np.array).loc[patient_ids].to_list()))
+    train_labels = np.array(train_labels).T
 
     if args.resume:
         checkpoint = torch.load('models/%s/checkpoint.pth.tar' % args.name)
 
-    folds = []
-    best_losses = []
-    # best_scores = []
+    # train
+    train_set = Dataset(
+        train_img_paths,
+        train_labels,
+        transform=train_transform)
+    train_loader = torch.utils.data.DataLoader(
+        train_set,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        # pin_memory=True,
+    )
 
-    for fold, ((train_img_paths, val_img_paths), (train_labels, val_labels)) in enumerate(zip(img_path_sets, label_sets)):
-        print('Fold [%d/%d]' %(fold+1, args.n_splits))
+    if args.optimizer == 'Adam':
+        optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'AdamW':
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'RAdam':
+        optimizer = RAdam(
+            filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == 'SGD':
+        optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
+                              momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
+    else:
+        raise NotImplementedError
 
-        if (args.resume and fold < checkpoint['fold'] - 1) or (not args.resume and os.path.exists('models/%s/model_%d.pth' % (args.name, fold+1))):
-            log = pd.read_csv('models/%s/log_%d.csv' %(args.name, fold+1))
-            best_loss = log.loc[log['val_loss'].values.argmin(), 'val_loss']
-            # best_loss, best_score = log.loc[log['val_loss'].values.argmin(), ['val_loss', 'val_score']].values
-            folds.append(str(fold + 1))
-            best_losses.append(best_loss)
-            # best_scores.append(best_score)
-            continue
+    if args.apex:
+        amp.initialize(model, optimizer, opt_level='O1')
 
-        # train
-        train_set = Dataset(
-            train_img_paths,
-            train_labels,
-            transform=train_transform)
-        train_loader = torch.utils.data.DataLoader(
-            train_set,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            # pin_memory=True,
-        )
+    if args.scheduler == 'CosineAnnealingLR':
+        scheduler = lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs, eta_min=args.min_lr)
+    elif args.scheduler == 'MultiStepLR':
+        scheduler = lr_scheduler.MultiStepLR(optimizer,
+            milestones=[int(e) for e in args.milestones.split(',')], gamma=args.gamma)
+    else:
+        raise NotImplementedError
 
-        val_set = Dataset(
-            val_img_paths,
-            val_labels,
-            transform=val_transform)
-        val_loader = torch.utils.data.DataLoader(
-            val_set,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            # pin_memory=True,
-        )
+    log = {
+        'epoch': [],
+        'loss': [],
+    }
 
-        # create model
-        model = get_model(model_name=args.arch,
-                          num_outputs=num_outputs,
-                          freeze_bn=args.freeze_bn,
-                          dropout_p=args.dropout_p,
-                          pooling=args.pooling,
-                          lp_p=args.lp_p)
-        model = model.cuda()
-        # print(model)
+    start_epoch = 0
 
-        if args.optimizer == 'Adam':
-            optimizer = optim.Adam(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
-        elif args.optimizer == 'AdamW':
-            optimizer = optim.AdamW(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
-        elif args.optimizer == 'RAdam':
-            optimizer = RAdam(
-                filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.weight_decay)
-        elif args.optimizer == 'SGD':
-            optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
-                                  momentum=args.momentum, weight_decay=args.weight_decay, nesterov=args.nesterov)
-        else:
-            raise NotImplementedError
+    if args.resume:
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        start_epoch = checkpoint['epoch']
+        log = pd.read_csv('models/%s/log.csv' % args.name).to_dict(orient='list')
 
-        if args.apex:
-            amp.initialize(model, optimizer, opt_level='O1')
+    for epoch in range(start_epoch, args.epochs):
+        print('Epoch [%d/%d]' % (epoch + 1, args.epochs))
+
+        # train for one epoch
+        train_loss = train(args, train_loader, model, criterion, optimizer, epoch)
 
         if args.scheduler == 'CosineAnnealingLR':
-            scheduler = lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=args.epochs, eta_min=args.min_lr)
-        elif args.scheduler == 'ReduceLROnPlateau':
-            scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, factor=args.factor, patience=args.patience,
-                                                       verbose=1, min_lr=args.min_lr)
-        elif args.scheduler == 'MultiStepLR':
-            scheduler = lr_scheduler.MultiStepLR(optimizer,
-                milestones=[int(e) for e in args.milestones.split(',')], gamma=args.gamma)
-        else:
-            raise NotImplementedError
+            scheduler.step()
 
-        log = {
-            'epoch': [],
-            'loss': [],
-            # 'score': [],
-            'val_loss': [],
-            # 'val_score': [],
+        print('loss %.4f' % (train_loss))
+
+        log['epoch'].append(epoch)
+        log['loss'].append(train_loss)
+
+        pd.DataFrame(log).to_csv('models/%s/log.csv' % args.name, index=False)
+
+        torch.save(model.state_dict(), 'models/%s/model.pth' % args.name)
+        print("=> saved model")
+
+        state = {
+            'epoch': epoch + 1,
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
         }
-
-        best_loss = float('inf')
-        # best_score = float('inf')
-
-        start_epoch = 0
-
-        if args.resume and fold == checkpoint['fold'] - 1:
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            start_epoch = checkpoint['epoch']
-            log = pd.read_csv('models/%s/log_%d.csv' % (args.name, fold+1)).to_dict(orient='list')
-            best_loss = checkpoint['best_loss']
-
-        for epoch in range(start_epoch, args.epochs):
-            print('Epoch [%d/%d]' % (epoch + 1, args.epochs))
-
-            # train for one epoch
-            train_loss = train(args, train_loader, model, criterion, optimizer, epoch)
-            # train_loss, train_score = train(
-            #     args, train_loader, model, criterion, optimizer, epoch)
-            # evaluate on validation set
-            val_loss = validate(args, val_loader, model, criterion)
-            # val_loss, val_score = validate(args, val_loader, model, criterion)
-
-            if args.scheduler == 'CosineAnnealingLR':
-                scheduler.step()
-            elif args.scheduler == 'ReduceLROnPlateau':
-                scheduler.step(val_loss)
-
-            print('loss %.4f - val_loss %.4f' % (train_loss, val_loss))
-            # print('loss %.4f - score %.4f - val_loss %.4f - val_score %.4f'
-            #       % (train_loss, train_score, val_loss, val_score))
-
-            log['epoch'].append(epoch)
-            log['loss'].append(train_loss)
-            # log['score'].append(train_score)
-            log['val_loss'].append(val_loss)
-            # log['val_score'].append(val_score)
-
-            pd.DataFrame(log).to_csv('models/%s/log_%d.csv' % (args.name, fold+1), index=False)
-
-            if val_loss < best_loss:
-                torch.save(model.state_dict(), 'models/%s/model_%d.pth' % (args.name, fold+1))
-                best_loss = val_loss
-                # best_score = val_score
-                print("=> saved best model")
-
-            state = {
-                'fold': fold + 1,
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'best_loss': best_loss,
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-            }
-            torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
-
-        print('val_loss:  %f' % best_loss)
-        # print('val_score: %f' % best_score)
-
-        folds.append(str(fold + 1))
-        best_losses.append(best_loss)
-        # best_scores.append(best_score)
-
-        results = pd.DataFrame({
-            'fold': folds + ['mean'],
-            'best_loss': best_losses + [np.mean(best_losses)],
-            # 'best_score': best_scores + [np.mean(best_scores)],
-        })
-
-        print(results)
-        results.to_csv('models/%s/results.csv' % args.name, index=False)
-
-        torch.cuda.empty_cache()
-
-        if not args.cv:
-            break
+        torch.save(state, 'models/%s/checkpoint.pth.tar' % args.name)
 
 
 if __name__ == '__main__':
